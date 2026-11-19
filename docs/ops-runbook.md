@@ -8,7 +8,8 @@
 
 | 事实 | 证据 |
 |---|---|
-| 备份→恢复链路可用 | `pg_dump -Fc` 92 KB / `pg_restore` 0.38 秒 / `db:verify` 335 列·393 约束·85 索引·6 触发器·6 函数 全过 |
+| 备份→恢复链路可用 | `pg_dump -Fc` 92 KB / `pg_restore` 0.4 秒 / `db:verify` 335 列·393 约束·85 索引·6 触发器·6 函数 全过 |
+| `db:verify` 只量骨架，量不出数据 | 一份 `--schema-only` 的空壳 dump 照样 335/393/85/6/6 全过，所以演练必须另比行数 |
 | `db:init` **只能跑在空库上** | 非空 schema 直接抛 `Database initialization requires an empty schema` |
 | 仓库里没有 Prisma migrations | `prisma/migrations` 不存在；增量靠 `prisma/updates/*.sql` 手工执行，无版本账本 |
 | `db:verify` 是**精确比对**，不是兼容检查 | 多加一列即报 `Unexpected columns: users.<col>` |
@@ -26,6 +27,7 @@
 2. **密钥文件权限**：`.env` 与密钥备份 `chmod 600`，属主为部署用户。`ENCRYPTION_KEY` / `OPAQUE_SERVER_KEY` / `BETTER_AUTH_SECRET` 一旦更换，旧数据不可解密、旧密码不可登录——**换之前先确认能不能承受**。
 3. **先备份再动任何东西**（第 5 节），并确认最近一次恢复演练是绿的。
 4. 确认 `APP_MODE`、`APP_URL`、回调地址与实际域名一致；`APP_URL` 错会导致回调地址错，直接产生死单。
+5. **客服入口必填**：后台 `/admin` → 网站设置 → `supportEmail`（可选 Tawk、账号操作指引链接）。这个字段为空时页脚不渲染「联系支持」，而 `Support.tsx` 的空态会写「支持联系方式尚未公布……请先暂停购买」——**空着上线等于站点主动劝买家别买**。转 live 前请求一次 `/help/payment`，正文必须出现真实邮箱或链接。
 
 ## 3. 部署与更新
 
@@ -78,7 +80,11 @@ crontab：
 17 * * * * cd /srv/store && DB_CONTAINER=store-postgres-1 BACKUP_DIR=/var/backups/getcodex REMOTE=ops@192.168.0.1:/srv/store-backups sh scripts/ops/backup-db.sh >> /var/log/getcodex-backup.log 2>&1
 ```
 
-脚本自带三道自检，任一不过即非零退出：容器在跑、dump 非空、`pg_restore --list` 的 TOC 条目 ≥ 50（实测 222 条）。同时生成 `.sha256` 旁路文件。`REMOTE` 未设置时会打印 `OFFHOST=missing` 并以 0 退出——**看到这行就说明异地副本没配**。
+每次运行产出三个文件，缺一个都不算完整备份：`.dump`（数据）、`.dump.sha256`（校验和，**写的是相对路径**，搬到异地后仍可 `shasum -c`）、`.dump.counts`（9 张钱与人相关表的行数，供演练核对）。
+
+脚本自带四道自检，任一不过即非零退出：容器在跑、dump 非空、`pg_restore --list` 的 TOC 条目 ≥ 50（实测 222 条）、行数 sidecar 写全。产物权限统一 `0600`、备份目录 `0700`（dump 里是 PII、口令哈希和加密后的提现账户）。
+
+退出码：`0` 正常、`1` dump/自检失败、`2` 异地拷贝失败、**`3` 未配置 `REMOTE`（只在本机有备份）**。最后这条是刻意的：以前它以 0 退出，等于「备份只在这台机器上」这件事永远不会让任何人发现。确实只需要本机副本时，显式传 `ALLOW_LOCAL_ONLY=1`。
 
 ### 第二层：异地副本
 
@@ -92,9 +98,21 @@ DRILL_BASE_URL="postgresql://getgpt:<pw>@127.0.0.1:5432/__DB__" \
   sh scripts/ops/restore-drill.sh >> /var/log/getcodex-drill.log 2>&1
 ```
 
-它会：新建临时库 → `pg_restore --exit-on-error` → 跑 `db:verify` → 删掉临时库。**只有它绿了，「备份有效」才算成立**。
+它做三件事，**三件全绿才算备份有效**：新建临时库 → `pg_restore --exit-on-error` → 跑 `db:verify` 比对结构 → **按 `.counts` 逐表比对行数** → 删掉临时库。没有 `.counts` 就直接以 `4` 退出：只证明结构回来、不证明数据在，不算通过。
 
-已实测的失败路径：喂一个被截断的 dump，脚本以 1 退出并打印 `pg_restore: error: could not read from input file: end of file`，临时库不留残留。也就是说这个门禁**不会无条件变绿**。
+两种失败路径都实测过，门禁不会无条件变绿：
+
+```
+# 空壳 dump（--schema-only，数据全丢，结构完好）
+drill: MISMATCH users expected=3 restored=0
+drill: FAILED: row counts differ beyond tolerance 0: users        → 退出码 1
+
+# 截断的 dump
+pg_restore: error: could not read from input file: end of file
+drill: FAILED: pg_restore reported errors                          → 退出码 1
+```
+
+`DRILL_TOLERANCE`（默认 0）只给写入非常频繁的站点留余量；**默认值下差一行就 FAIL**。临时库无论成败都会删除，不留残留。
 
 若宿主机没装 bun，改用镜像里的验证器：设置 `APP_IMAGE=<镜像>@sha256:<digest>` 与 `DRILL_NETWORK=<compose 网络>`，`db:verify` 会在一次性容器里跑。
 
@@ -148,6 +166,7 @@ XorPay 查询接口有六种状态：`success` / `payed` 都算已付（前者�
 ## 9. 已知缺口（不在本手册范围内，需代码改动）
 
 - 无 migration 工具与版本账本（第 4 节是权宜之计）。
+- 备份**未加密**：当前只靠 `0600` 与目录 `0700` 控制，异地机器是多 agent 共用。建议上线前加 age/gpg，私钥只留在恢复方。
 - Worker / sweeper 无业务心跳实现。
 - 出货 job 无最大尝试次数。
 - 上游错误码未覆盖 `invalid_order_key` / `stock_unavailable`，缺货会被当故障无限重试。
