@@ -12,7 +12,7 @@
    证据（@u5c0f-i 核实 + @u5c0f-q 复读代码确认）：`confirmGmpayReceipt` 请求 `order/query`（`payments.ts:236`），挂在主回调路径（`route.ts:43`），接 Epusdt 时每笔回调 404 → `ApiError(503)` → 厂商重试耗尽 → **GMPay 全部收入进不了账**。mock 测不出这个 404，沙箱真发一笔。
    - **P0-A 下单 100% 失败**：`services.ts:344` 生成 `o_`+32hex = **34 字符**，超网关 `maxLen:32` → `400/10009`；同参数 32 字符 → `200`。现有测试夹具用 `orderId:'tx'`（2 字符），正好绕过长度限制，所以一直绿。修法：`o_`+30 位 = 32 字符，确定性幂等不变，与历史 34 字符订单并存无需迁移。
    - **P0-B 查单路由不存在**：`/payments/gmpay/v1/order/query` **GET/POST 均 404**（v2.0.0 `router.go` 只注册 `create-transaction` 与 `config`）；真路由 `GET /pay/check-status/{trade_id}` 只回 `{trade_id,status}`，现有四重比对（currency/order_id/amount）必挂 → 判据改为 `status==2`，金额交叉核用 `GET /pay/checkout-counter-resp/{trade_id}`。
-   - **10002 不可恢复（新）**：网关按 `order_id` 全局查重（`order_service.go:139-145`），且**没有按 order_id 反查 trade_id 的接口** → POST 已建单但响应丢失时，重试只拿 10002，支付地址永久丢。修法：建单超时不盲目重建、`paymentId` 先落库、10002 单独处置文案。
+   - **10002 不可自动恢复（措辞已更正）**：网关按 `order_id` 全局查重（`order_service.go:139-145`）。**商户 API** 没有按 order_id 反查 trade_id 的接口；**网关管理端有**（`GET /admin/api/v1/orders?keyword=` 同时按 order_id/trade_id 搜，另有 `resend-callback`/`mark-paid`，未带凭据实测 `401` 非 `404`）。所以结论是「商户侧无自动恢复，恢复走管理端人工，admin 凭据不进应用」，不是「支付地址永久丢」。修法：建单超时不盲目重建、`paymentId` 先落库、10002 单独处置文案。
    - **10041 是 DNS 不是黑名单（新，更正队友归因）**：网关下单时对 `notify_url` 的 host 实时解析并要求公网 IP（`url_guard.go`）。同参数对照：`example.com`→200、`example.test`/`.invalid`（不解析）/`192.168.0.1`（私网）→10041。**生产填真实域名不受影响，代码不用改；但代理商裸 IP/内网域名自托管会 100% 建单失败 → 进 `deployer-preflight.sh`。**
    - **签名为兼容项，不要顺手动**：HMAC-SHA256 + ASCII 排序 + 排除 `signature`/空值，与 `signatures.ts` 一致（实测正确签名换到 `10004` 而非 `401`）；回调 `status=2` 判成功、回 `ok` 亦一致。
 
