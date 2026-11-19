@@ -221,6 +221,57 @@ EOF
   esac
 fi
 
+echo "== 3.6 本机时钟偏差（采购上游硬线：偏差 > 60 秒 = 401 timestamp_expired）=="
+# Dujiao-Next 的 /api/v1/upstream/* 签名里带 timestamp，服务端按自己的时钟判窗口。
+# 时钟跑偏不表现为「代码 bug」，而是采购全停，报错还叫 timestamp_expired——
+# 很容易被当成签名算法写错。本机历史上真出现过整体偏两天。
+# 判据不依赖本机 NTP 是否配好：直接取任一可达 HTTPS 端点的 Date 响应头比对。
+STRICT36=0
+case "$ACTIVE" in *aicdk*) STRICT36=1 ;; esac
+[ "${PREFLIGHT_STRICT_CLOCK:-0}" = "1" ] && STRICT36=1
+p6fail() {
+  if [ "$STRICT36" = "1" ]; then fail "$1"
+  else warn "$1（当前未启用采购上游：暂不阻塞，启用前必须修）"; fi
+}
+CLOCK_RAW=""
+for CLOCK_URL in "https://www.cloudflare.com" "https://dujiao-next.com"; do
+  CLOCK_RAW=$(curl -sI --max-time 6 "$CLOCK_URL" 2>/dev/null | awk 'BEGIN{IGNORECASE=1}/^date:/{sub(/^date:[ \t]*/,""); print; exit}' | tr -d '\r')
+  [ -n "$CLOCK_RAW" ] && break
+done
+if [ -z "$CLOCK_RAW" ]; then
+  UNVERIFIED=1
+  warn "拿不到任何外部时间（${CLOCK_URL} 无 Date 头）：时钟偏差未验证，联网后重跑或人工 ntpq -p"
+elif ! command -v python3 >/dev/null 2>&1; then
+  UNVERIFIED=1
+  warn "本机无 python3，无法解析 Date 头（${CLOCK_RAW}）：请人工核对时钟"
+else
+  DRIFT=$(python3 - "$CLOCK_RAW" <<'PY'
+import sys, datetime, email.utils
+try:
+    net = email.utils.parsedate_to_datetime(sys.argv[1].strip())
+    if net.tzinfo is None:
+        net = net.replace(tzinfo=datetime.timezone.utc)
+    now = datetime.datetime.now(datetime.timezone.utc)
+    print(int(round((net - now).total_seconds())))
+except Exception:
+    print("")
+PY
+)
+  if [ -z "$DRIFT" ]; then
+    UNVERIFIED=1
+    warn "Date 头解析失败（${CLOCK_RAW}）：请人工核对时钟"
+  else
+    ABS=${DRIFT#-}
+    if [ "$ABS" -gt 60 ]; then
+      p6fail "本机时钟与外部差 ${DRIFT} 秒（正数=本机慢），超过上游 60 秒硬线：采购下单会全部 401 timestamp_expired"
+    elif [ "$ABS" -gt 30 ]; then
+      warn "本机时钟与外部差 ${DRIFT} 秒：还没到 60 秒硬线，但已过半，请校时（macOS: sudo sntp -sS time.apple.com）"
+    else
+      pass "本机时钟与外部差 ${DRIFT} 秒（阈值 60）"
+    fi
+  fi
+fi
+
 echo "== 4. 品牌残留（代理商自托管场景）=="
 if command -v grep >/dev/null && [ -d src ]; then
   HITS=$(grep -rn 'GetCodex' src --include=*.ts --include=*.tsx 2>/dev/null | grep -vc '\.test\.' || true)

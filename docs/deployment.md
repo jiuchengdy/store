@@ -170,5 +170,6 @@ bun run build
 - 验证 HTTPS 地址、支付回调可达性、网关提供的客户端 IP，以及 Web / Worker 重启后的数据持久化。
 - 定期备份数据库、服务配置和密钥，并在独立环境演练恢复。不要把 `docker compose down -v` 当作更新命令，它会删除数据库卷。
 - 更新前记录镜像摘要并备份；按 [数据库维护](database.md) 执行增量 SQL，确保 Web 与 Worker 同步更新。回滚应用前先核对数据库兼容性。
+- **核对本机时钟**：采购上游（Dujiao-Next `/api/v1/upstream/*`）的签名带 `timestamp`，与服务端偏差超过 **60 秒**就一律 `401 timestamp_expired`，表现为「采购全停」而不是签名错误。`scripts/ops/deployer-preflight.sh §3.6` 会拿外部 `Date` 头算出偏差，>60 秒判 FAIL、30–60 秒给 WARN。
 
 容器健康检查访问 `/robots.txt`，只能证明 Web 可响应，不能替代数据库、Worker 或支付渠道监控。生产环境还需关注任务积压、异常订单和日志错误。
