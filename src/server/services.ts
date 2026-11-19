@@ -306,6 +306,13 @@ async function walletChange(
     data: { id: id('l_'), userId, amount, balanceAfter: balance, kind, orderId },
   })
 }
+// GMPay (EPUSDT) rejects an order_id longer than 32 characters, so the id is "o_"
+// plus the first 30 hex chars of the request hash (120 bits of collision space).
+// Deterministic on purpose: the same user/browser + requestKey yields the same id,
+// which is the payment idempotency key. Ids created before this change were 34
+// characters; they are never regenerated, so both shapes coexist.
+export const orderIdFor = (seed: string) => `o_${hash(seed).slice(0, 30)}`
+
 export async function newOrder(
   user: User | null,
   browser: string,
@@ -339,7 +346,7 @@ export async function newOrder(
       : input.channel === 'balance'
         ? 'balance'
         : conf.fiatProvider
-  const orderId = `o_${hash(`${user?.id || browser}:${input.requestKey}`).slice(0, 32)}`
+  const orderId = orderIdFor(`${user?.id || browser}:${input.requestKey}`)
   const requestHash = hash(
     JSON.stringify({
       quoteId: input.quoteId ?? null,

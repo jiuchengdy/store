@@ -13,7 +13,7 @@ vi.hoisted(() => {
 })
 import { db, Prisma, transaction } from './db'
 import { userView, paymentOrderView, adminOrderView, orderView } from './data'
-import { id, hash } from './crypto'
+import { id } from './crypto'
 import {
   importInventory,
   inventoryFingerprint,
@@ -29,6 +29,7 @@ import {
   account,
   acceptPayment,
   refundFailedOrder,
+  orderIdFor,
 } from './services'
 import { lockRow, reserveInventory } from './database-sql'
 import { fulfillOrder } from './fulfillment'
@@ -922,7 +923,7 @@ suite('AICDK v2 end-to-end business invariants in isolated PostgreSQL schema', (
         firstOrderOnly: true,
       })),
     })
-    const orderId = `o_${hash(`${request.buyer.id}:${request.input.requestKey}`).slice(0, 32)}`
+    const orderId = orderIdFor(`${request.buyer.id}:${request.input.requestKey}`)
     try {
       await expect(newOrder(request.buyer, request.browser, request.input)).rejects.toMatchObject({
         status: 403,

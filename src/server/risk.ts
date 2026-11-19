@@ -34,6 +34,32 @@ function privateSubjects(subjects: RiskSubjects) {
   )
 }
 
+// Payment anomalies found while confirming a provider receipt. Kept separate from
+// recordRisk (which takes a decision produced by the rules engine): these are
+// fixed verdicts, and without them a "callback says paid, gateway disagrees"
+// event would leave no trace outside a console line.
+export async function recordPaymentAnomaly(
+  kind: string,
+  facts: object,
+  orderId?: string,
+  client: DbClient = db,
+) {
+  await client.riskEvent.create({
+    data: {
+      id: id('risk_'),
+      scene: 'payment',
+      action: 'review',
+      effectiveAction: 'review',
+      mode: 'enforce',
+      ruleVersion: riskVersion,
+      reasonCodes: [kind],
+      subjects: {},
+      facts: JSON.parse(JSON.stringify(facts)),
+      referenceId: orderId,
+    },
+  })
+}
+
 export async function recordRisk(
   scene: string,
   decision: RiskDecision,

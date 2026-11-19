@@ -7,6 +7,7 @@ import {
   confirmGmpayReceipt,
   type Provider,
 } from '../../../../../../server/integrations/payments'
+import { recordPaymentAnomaly } from '../../../../../../server/risk'
 import { acceptPayment } from '../../../../../../server/services'
 
 export const runtime = 'nodejs'
@@ -40,11 +41,38 @@ async function handle(
     }
     const config = await integration(provider as Provider, revision)
     const receipt = verifyReceipt(provider as Provider, fields, config)
-    if (provider === 'gmpay' && receipt.paid) await confirmGmpayReceipt(receipt, config)
+    const ack = () =>
+      new Response(provider.startsWith('epay') ? 'success' : 'ok', {
+        headers: { 'Content-Type': 'text/plain', 'Cache-Control': 'no-store' },
+      })
+    if (provider === 'gmpay' && receipt.paid) {
+      // Acknowledging and crediting are separate decisions. When the gateway's
+      // own answer contradicts the callback we still reply ok (stopping its retry
+      // storm) but do NOT credit: the order stays untouched and a risk event makes
+      // it visible to an operator. "ok" only means "callback received".
+      const check = await confirmGmpayReceipt(receipt, config)
+      if (check.verdict === 'mismatch' || check.verdict === 'manual') {
+        await recordPaymentAnomaly(
+          check.reason,
+          {
+            verdict: check.verdict,
+            provider,
+            orderId: receipt.orderId,
+            tradeId: receipt.transactionId,
+            ...check.facts,
+          },
+          receipt.orderId,
+        )
+        console.warn(`[payments] gmpay callback acknowledged but not credited: ${check.reason}`)
+        return ack()
+      }
+      if (check.verdict === 'unreachable')
+        console.warn(
+          `[payments] gmpay status check unavailable (${check.reason}); crediting on signature + status=2`,
+        )
+    }
     await acceptPayment(provider, revision, receipt)
-    return new Response(provider.startsWith('epay') ? 'success' : 'ok', {
-      headers: { 'Content-Type': 'text/plain', 'Cache-Control': 'no-store' },
-    })
+    return ack()
   } catch (error) {
     return failure(error)
   }

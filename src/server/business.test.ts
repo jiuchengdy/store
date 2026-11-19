@@ -26,6 +26,7 @@ import {
   account,
   reviewWithdrawal,
   withdrawalPayoutEstimate,
+  orderIdFor,
 } from './services'
 import { defaultReferralTiers } from '../referral'
 import {
@@ -34,7 +35,7 @@ import {
   withdrawalDestinations,
   withdrawalFee,
 } from '../withdrawals'
-import { id, hash } from './crypto'
+import { id } from './crypto'
 import { demoSession } from '../lib'
 import { analyticsVisitor, recordView } from './funnel'
 import { authorize, permissionsFor } from './rbac'
@@ -1102,7 +1103,7 @@ suite('PostgreSQL payment, wallet and authorization invariants', () => {
     expect((await newOrder(owner, id(), input)).id).toBe(accepted.id)
     const blocked = { ...input, requestKey: id() }
     await expect(newOrder(owner, id(), blocked)).rejects.toMatchObject({ status: 403 })
-    const blockedId = `o_${hash(`${owner.id}:${blocked.requestKey}`).slice(0, 32)}`
+    const blockedId = orderIdFor(`${owner.id}:${blocked.requestKey}`)
     expect(await db.order.findUnique({ where: { id: blockedId } })).toBeNull()
     const events = await db.riskEvent.findMany({ where: { referenceId: blockedId } })
     expect(events).toHaveLength(1)
@@ -1506,4 +1507,12 @@ suite('PostgreSQL payment, wallet and authorization invariants', () => {
       await testQuery(Prisma.sql`UPDATE settings SET body=${JSON.stringify(previous)} WHERE id=1`)
     }
   })
+
+  it('keeps generated order ids within the gateway 32 character limit and deterministic', () => {
+    const seed = `${id()}@example.com:${id()}`
+    expect(orderIdFor(seed)).toBe(orderIdFor(seed))
+    expect(orderIdFor(seed).length).toBeLessThanOrEqual(32)
+    expect(orderIdFor(seed)).toMatch(/^o_[0-9a-f]{30}$/)
+  })
+
 })

@@ -74,7 +74,19 @@ async function post(url: string, fields: Record<string, string>) {
     redirect: 'error',
     cache: 'no-store',
   })
-  if (!response.ok) throw new ApiError(502, '支付渠道暂未响应，请在原订单中联系支持')
+  if (!response.ok) {
+    // Gateways answer business errors with 4xx *and* a JSON body. 10002 (EPUSDT:
+    // this order_id already exists) must reach the buyer as "do not pay twice",
+    // not as a generic "gateway did not respond", otherwise support has no clue.
+    const errorBody = await response.json().catch(() => null)
+    const code =
+      errorBody && typeof errorBody === 'object'
+        ? (errorBody as { status_code?: number }).status_code
+        : undefined
+    if (code === 10002)
+      throw new ApiError(502, '该订单在网关已存在，请勿重复支付；请联系支持核对原订单')
+    throw new ApiError(502, '支付渠道暂未响应，请在原订单中联系支持')
+  }
   const body = await response.json()
   return typeof body === 'string' ? JSON.parse(body) : body
 }
@@ -124,6 +136,11 @@ export async function createPayment(
       `${origin(config.url)}/payments/gmpay/v1/order/create-transaction`,
       fields,
     )
+    // 10002 = the gateway already has an order with this order_id. We cannot
+    // recover its trade_id through the merchant API, so never retry blindly:
+    // tell the buyer not to pay twice and route to manual reconciliation.
+    if (response.status_code === 10002)
+      throw new ApiError(502, '该订单在网关已存在，请勿重复支付；请联系支持核对原订单')
     if (!response.data?.trade_id || !response.data?.payment_url)
       throw new ApiError(502, 'GMPay 未返回收款信息，请联系支持核对原订单')
     return {
@@ -229,27 +246,115 @@ export function verifyReceipt(
     channel: fields.type === 'wxpay' ? 'wechat' : fields.type,
   }
 }
-export async function confirmGmpayReceipt(receipt: Receipt, config: Record<string, string>) {
-  const fields: Record<string, string> = { pid: config.pid, order_id: receipt.orderId }
-  fields.signature = gmpaySignature(fields, config.secret)
-  const response = await fetch(
-    `${origin(config.url)}/payments/gmpay/v1/order/query?${new URLSearchParams(fields)}`,
-    {
+export type GmpayVerdict = 'credited' | 'unreachable' | 'mismatch' | 'manual'
+export interface GmpayCheck {
+  verdict: GmpayVerdict
+  reason: string
+  facts: Record<string, unknown>
+}
+
+// EPUSDT v2 exposes GET /pay/check-status/{trade_id} (no signature) and returns
+// only {trade_id, status}. The amount/currency cross-check therefore uses the
+// cashier endpoint /pay/checkout-counter-resp/{trade_id}.
+//
+// The verdicts are deliberately distinct, because the caller treats them
+// differently (only credited/unreachable may credit an order):
+//   unreachable — we could not ask (network, timeout, 5xx, 404 route)
+//   manual      — we asked and the answers contradict the callback
+//                 (10008 order not found, status != 2, placeholder status 4)
+//   mismatch    — we asked and got a different order or a different amount
+// Order matters: trade_id is checked BEFORE the amount, otherwise a switched
+// order could pass on a coincidentally equal amount.
+export async function confirmGmpayReceipt(
+  receipt: Receipt,
+  config: Record<string, string>,
+): Promise<GmpayCheck> {
+  const base = origin(config.url)
+  const statusUrl = `${base}/pay/check-status/${encodeURIComponent(receipt.transactionId)}`
+  let response: Response
+  try {
+    response = await fetch(statusUrl, {
       signal: AbortSignal.timeout(15000),
       redirect: 'error',
       cache: 'no-store',
-    },
-  )
-  if (!response.ok) throw new ApiError(503, '支付状态暂时无法核实')
-  const result = await response.json()
-  const data = result.data
-  if (
-    !data ||
-    data.currency !== 'CNY' ||
-    String(data.trade_id) !== receipt.transactionId ||
-    data.order_id !== receipt.orderId ||
-    decimalToMinor(String(data.amount)) !== receipt.amount ||
-    Number(data.status) !== 2
-  )
-    throw new ApiError(400, '支付查询结果不匹配')
+    })
+  } catch (error) {
+    return { verdict: 'unreachable', reason: 'check_status_unreachable', facts: { error: String(error) } }
+  }
+  // A 404 here means the route is missing (wrong gateway/version), which is a
+  // configuration failure, not evidence about the payment.
+  if (!response.ok)
+    return { verdict: 'unreachable', reason: `check_status_http_${response.status}`, facts: {} }
+
+  let raw: unknown
+  try {
+    raw = await response.json()
+  } catch {
+    return { verdict: 'manual', reason: 'check_status_malformed', facts: {} }
+  }
+  if (!raw || typeof raw !== 'object')
+    return { verdict: 'manual', reason: 'check_status_malformed', facts: {} }
+  const body = raw as { status_code?: number; data?: Record<string, unknown> }
+  if (body.status_code === 10008)
+    return { verdict: 'manual', reason: 'order_not_found', facts: { statusCode: body.status_code } }
+  const data = body.data
+  if (!data) return { verdict: 'manual', reason: 'check_status_no_data', facts: { statusCode: body.status_code ?? null } }
+
+  const tradeId = String(data.trade_id ?? '')
+  if (tradeId !== receipt.transactionId)
+    return {
+      verdict: 'mismatch',
+      reason: 'trade_id_mismatch',
+      facts: { expected: receipt.transactionId, actual: tradeId || null },
+    }
+  const status = Number(data.status)
+  if (status !== 2)
+    return {
+      verdict: 'manual',
+      reason: status === 4 ? 'awaiting_selection' : `status_${Number.isFinite(status) ? status : 'unknown'}`,
+      facts: { status: Number.isFinite(status) ? status : null },
+    }
+  return verifyGmpayAmount(receipt, base)
+}
+
+// Second opinion on money. An unreachable cashier endpoint must NOT block
+// crediting — the callback signature already proves the source — but a reachable
+// endpoint that disagrees about amount or currency must block it.
+async function verifyGmpayAmount(receipt: Receipt, base: string): Promise<GmpayCheck> {
+  const url = `${base}/pay/checkout-counter-resp/${encodeURIComponent(receipt.transactionId)}`
+  let response: Response
+  try {
+    response = await fetch(url, {
+      signal: AbortSignal.timeout(15000),
+      redirect: 'error',
+      cache: 'no-store',
+    })
+  } catch (error) {
+    return { verdict: 'credited', reason: 'amount_check_unreachable', facts: { error: String(error) } }
+  }
+  if (!response.ok)
+    return { verdict: 'credited', reason: `amount_check_http_${response.status}`, facts: {} }
+  let data: Record<string, unknown> | null = null
+  try {
+    const body = (await response.json()) as { data?: Record<string, unknown> } | null
+    data = body?.data ?? null
+  } catch {
+    return { verdict: 'credited', reason: 'amount_check_malformed', facts: {} }
+  }
+  if (!data) return { verdict: 'credited', reason: 'amount_check_no_data', facts: {} }
+
+  let amount: number
+  try {
+    amount = decimalToMinor(String(data.amount ?? ''))
+  } catch {
+    return { verdict: 'mismatch', reason: 'amount_unparsable', facts: { raw: data.amount ?? null } }
+  }
+  const currency = String(data.currency ?? '').toUpperCase()
+  if (amount !== receipt.amount || (currency !== '' && currency !== 'CNY'))
+    return {
+      verdict: 'mismatch',
+      reason: 'amount_mismatch',
+      facts: { expectedMinor: receipt.amount, actualMinor: amount, currency: currency || null },
+    }
+  return { verdict: 'credited', reason: 'verified', facts: { amountMinor: amount, currency: currency || null } }
 }
