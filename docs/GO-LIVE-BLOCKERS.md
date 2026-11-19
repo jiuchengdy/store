@@ -21,10 +21,10 @@
 2. **上游错误码补全 + 资金滞留人工路径** — 实现 @u5c0f-r，**验收 @u5c0f-q**；runbook 7.2 人工分支 @u5c0f-o 已写。任务单 `P0-2-upstream-error-codes.md`。
    补 `invalid_order_key`、`stock_unavailable`；**未知 4xx 不再无限重试**（含 Epusdt 配置类 400：`10016/10017/10018/10019` 映射 `MANUAL_REVIEW` + 配置告警，不是买家问题）。
 
-3. **数据库迁移基线化** — @u5c0f-o 出方案。根因坐实：**真正 schema 源头是 `prisma/init.sql`（触发器/约束都在里面）**，`prisma/migrations` 为空（`e7dcd59` 主动移除历史），"以前怎么升库"永久无解，只能新建 `schema_version` 账本。改表走 expand-contract 两步。
+3. **数据库迁移基线化（排最前，所有改表 P0 的前置）** — @u5c0f-o 出方案。根因坐实：**真正 schema 源头是 `prisma/init.sql`（触发器/约束都在里面）**，`prisma/migrations` 为空（`e7dcd59` 主动移除历史），"以前怎么升库"永久无解，只能新建 `schema_version` 账本。最小版：`schema_version` 表 + 编号 SQL + 记账脚本，契约同步已由 `scripts/ops/gen-contract.ts` 自动化（干净库 exit 0、加列 exit 1，不再手改 335 条 JSON）。改表走 expand-contract 两步；P0#1 能力开关、P0#4 job 上限都要加列，都在等它。
 
 4. **Worker 业务心跳 + 出货 job 最大重试上限** — @u5c0f-o 做 `ops_heartbeat`，@u5c0f-r 补 job 上限，**验收 @u5c0f-q**。任务单 `P0-4-job-retry-cap.md`。
-   判据：job 达上限转 `failed` 并发通知。**注意发信是数据库触发器**（`init.sql:759`，状态一变自动入队 `email_outbox`），误改状态也会发信；且 `email_outbox` 唯一键 `ON CONFLICT DO NOTHING` 会吞掉「failed→改回 processing→再 failed」的第二封——验收加一条：**同一订单两次不同时段进 failed，买家必须收到两封**（或明确记录为已知限制）。
+   判据：job 达上限转 `failed` 并发通知。**注意发信是数据库触发器**（`init.sql:759`，状态一变自动入队 `email_outbox`），误改状态也会发信；`email_outbox` 唯一键 `ON CONFLICT DO NOTHING` 会吞掉第二封（@u5c0f-q 实测成立）。**两封信走 a：P0#3 落地后改触发器实现，不绕触发器、不记已知限制。** 另加判据：①两次不同时段进 `failed` 必须收两封；②`contact_email` 为空转 `failed` 后台必须有可见提示（触发器 `IF NEW.contact_email IS NOT NULL`，空则一封不入队、零报错——游客单/补单/数据修复会彻底静默）。
 
 5. **备份三层自动化 + 恢复演练** — @u5c0f-o 修复 `fcdd6da`，**@u5c0f-q 已逐条实测验收通过（签字），可进 crontab**（前提 `REMOTE` 定了）。8 项全实跑：剪枝 BSD、异地 sha256、0600 权限、空壳 dump 打穿（MISMATCH exit 1）、`.counts` 缺失 exit 4、有数据用例、清理无残留。
    **仍卡用户**：① 异地目标 `192.168.0.1` 是否接受；② **加密未做**（age/gpg，需先定私钥谁保管）。
@@ -61,4 +61,5 @@
 - **占位单（`AWAITING_SELECTION`）不计死单、不报警**，归"不该动作"档。
 - 实现/验收分离：P0#1/#2/#4 由 @u5c0f-r 实现，@u5c0f-q 按任务单逐条实测验收。
 - 权限拆分、双人复核、对账 → backlog。
+- **排期（改表类 P0）**：P0#3（最小迁移账本）→ P0#4（job 上限 + 两封信）→ P0#1 → P0#2；P0#5 已完成只等 REMOTE+加密。一个 Codex 轮次别同时改触发器 + 契约 + 业务逻辑。
 - 下一步：等用户回 GMPay 域名（P0#0）+ 定谁落地（@u5c0f-r 自己写还是给 Codex），任务单已可直接扔给 Codex。
