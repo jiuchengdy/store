@@ -896,3 +896,14 @@ CREATE TABLE stock_purchases (
     created_at timestamptz NOT NULL DEFAULT now()
 );
 CREATE INDEX stock_purchases_state_next_run_at_idx ON stock_purchases(state, next_run_at);
+
+-- Migration ledger (appended 2026-11-19). Records which numbered SQL file under
+-- prisma/migrations has been applied. Written only by `bun run db:migrate`;
+-- never edited by hand. Kept out of prisma/database-contract.json on purpose:
+-- see the follow-up task that adds it to managedTables.
+CREATE TABLE schema_version (
+    version integer PRIMARY KEY,
+    checksum text NOT NULL,
+    applied_at timestamptz NOT NULL DEFAULT now(),
+    applied_by text NOT NULL
+);

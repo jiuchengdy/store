@@ -26,7 +26,8 @@
     "db:seed": "bun --env-file=.env scripts/seed.ts",
     "db:update-commercial-policy": "bun --env-file=.env scripts/update-commercial-policy.ts",
     "postinstall": "bun run db:generate",
-    "db:init": "bun --env-file=.env scripts/init-database.ts"
+    "db:init": "bun --env-file=.env scripts/init-database.ts",
+    "db:migrate": "bun --env-file=.env scripts/migrate.ts"
   },
   "dependencies": {
     "@ant-design/icons": "6.3.4",

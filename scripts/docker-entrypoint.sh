@@ -17,6 +17,9 @@ case "${1:-web}" in
   db:verify|verify)
     exec bun scripts/verify-database.ts
     ;;
+  migrate)
+    exec bun scripts/migrate.ts
+    ;;
   admin:bootstrap)
     exec bun scripts/bootstrap-admin.ts
     ;;

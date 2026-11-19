@@ -6,7 +6,7 @@
 
 ## 0. 一句话目标
 
-现在改表没有安全做法：`db:init` 只能在空库跑，`prisma/migrations` 为 0，`prisma/updates/` 只有 4 个裸 SQL、没有版本账本、没有顺序、没有回滚。所有要改表的 P0（能力开关加列、job 上限）都在等这一条。目标：**一张 `schema_version` 表 + 编号 SQL + 一个执行并记账的脚本**，把"改表"变成可重复、可判定、可回退到旧版本的动作。
+现在改表没有安全做法：`db:init` 只能在空库跑，`prisma/migrations` 为 0，`prisma/updates/` 只有 4 个裸 SQL、没有版本账本、没有顺序、没有回滚。所有要改表的 P0（能力开关加列、job 上限）都在等这一条。目标：**一张 `schema_version` 表 + 编号 SQL + 一个执行并记账的脚本**，把"改表"变成可重复、可判定的动作。回退口径（2026-11-19 拍板）：**失败时停在旧版本、`schema_version` 不前进；数据级回退=恢复迁移前的 `pg_dump`**——本轮不交付 down 迁移，也不在文档里承诺「可回退到旧版本」。
 
 ## 1. 现状（已核实的代码事实，不要重新论证）
 
@@ -32,11 +32,13 @@
 
 ## 3. 实现要点
 
-1. **引导问题（bootstrap，必须显式处理）**：引入 `schema_version` 本身多了一张表，`db:verify` 会红。做法：这次改动里手工 `bun scripts/ops/gen-contract.ts` 重生成契约并一起提交——**这是一次性例外**，之后所有迁移都必须走 `db:migrate` + `gen-contract`。
+1. **引导问题（bootstrap）——已核实，原判据是错的**：`db:verify` 只统计 `src/server/database-catalog.ts` 里硬编码的 34 张 `managedTables` 白名单，`schema_version` 不在其中，因此**加这张表不会让 `db:verify` 变红（仍是 335/393/85/6/6），契约 json 也不会 diff，不需要重生成**。副作用相反：账本表不在白名单里，等于它的删改永远不会被 `db:verify` 发现——「把 `schema_version` 加进 `managedTables`」单独一个提交排在本轮之后（届时列数变 339，基线数字、契约、CI 判据一起改，不与本轮同提交）。业务表的迁移仍然必须 `gen-contract`。
 2. 迁移文件只用**编号 + 下划线**命名（`0002_add_payment_capability.sql`），排序即执行顺序。
 3. 幂等：同一迁移重复执行不报错、不重复记账（查 `schema_version` 决定是否执行，同时用 checksum 检出"已应用的 SQL 被偷偷改过"→ 直接报错退出，不要静默重跑）。
 4. 事务边界：**一个文件一个事务**，禁止把多个文件包进一个大事务（一次失败会倒退到很远）。
-5. 明确不支持「自动回滚脚本」：回滚 = 恢复备份（`ops-runbook.md` 已覆盖）。但必须支持「迁移失败 → 停在旧版本且 `schema_version` 没前进」。
+5. 明确不支持「自动回滚脚本」，**本轮也不交付 down 迁移**：回滚 = 恢复备份（`ops-runbook.md` 已覆盖）。但必须支持「迁移失败 → 停在旧版本且 `schema_version` 没前进」。
+5.1 `applied_by` 口径（已拍板）：读 `MIGRATE_APPLIED_BY`；未设置时回落 `git:<短 SHA>@<主机名>`；镜像内无 `.git` 时回落 `unknown@<主机名>`——**任何情况下都不能是空串**。部署顺序是「先迁移、后滚动部署」，迁移时刻新镜像还没上机，拿不到 digest，所以不许把 digest 设成硬性要求。
+5.2 `scripts/docker-entrypoint.sh` 需增加 `migrate) exec bun scripts/migrate.ts` 分支：生产镜像根文件系统 `read_only: true`，迁移脚本**不许往工作目录写临时文件**，checksum 在内存里算。
 6. expand-contract 纪律写进文档：**只加不删**（先加列/新表，下一版本才清理旧列），否则旧镜像会在滚动窗口内 500。**收缩版本单独发一个 release，且发布前先跑一次恢复演练**——收缩之后再回滚旧镜像，等于让旧代码对着一个它不认识的库形状跑，这是最难救的组合。
 
 ## 4. 部署顺序（写进 `docs/database.md` 和 runbook，别只写在代码注释里）
