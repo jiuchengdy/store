@@ -125,6 +125,8 @@ crontab：
    - 只有 demo/开发模式未设该变量时，钥匙才会生成到 `.data/encryption.key`（32 字节二进制 = 64 hex）。
    所以「备份了 `.env`」在开发形态下等于**没备份钥匙**——三样齐了照样解不开。
    演练与探针两种形态都认：`ENCRYPTION_KEY`（64 hex）或 `ENCRYPTION_KEY_FILE`（64 hex 文本，或 `.data/encryption.key` 那种 32 字节二进制）。注意用 `APP_IMAGE` 跑演练时容器看不到宿主机文件，只能传环境变量。
+
+   **容器化部署只有环境变量这一种合法来源。** `compose.prod.yaml` 是 `read_only: true`，只挂了 `/tmp` 与 `/app/.next/cache` 两个 tmpfs，**没有任何 `.data` 卷**——所以 `.data/encryption.key` 在容器里要么根本写不进去（只读根文件系统），要么（若被打进镜像）随下一次换镜像一起消失，那批密文全部报废。这也是 `crypto.ts` 在 live 模式强制要求 `ENCRYPTION_KEY` 的原因：不是偏好，是拓扑决定的。
 2. dump 与钥匙 **分开存**：不同目录、不同介质、不同加密；
 3. 备份加密（age/gpg）的私钥**只在恢复方手里**，不要和备份放在同一台机器；
 4. 恢复演练时用到的密钥走临时注入，不要写进演练脚本。
