@@ -261,13 +261,24 @@ PY
     UNVERIFIED=1
     warn "Date 头解析失败（${CLOCK_RAW}）：请人工核对时钟"
   else
+    # 结论要能归属到具体机器：Linux 容器的 CLOCK_REALTIME 与宿主机共用内核时钟，
+    # 同机容器不可能各自漂移；真正需要分别验的是「worker 跑在另一台 VM/物理机」。
+    CLOCK_SCOPE="$(hostname 2>/dev/null || echo unknown)"
+    if [ -f /.dockerenv ]; then
+      CLOCK_SCOPE="${CLOCK_SCOPE} 容器内（与宿主机共用内核时钟）"
+    else
+      CLOCK_SCOPE="${CLOCK_SCOPE} 宿主机"
+    fi
     ABS=${DRIFT#-}
     if [ "$ABS" -gt 60 ]; then
-      p6fail "本机时钟与外部差 ${DRIFT} 秒（正数=本机慢），超过上游 60 秒硬线：采购下单会全部 401 timestamp_expired"
+      p6fail "本机时钟与外部差 ${DRIFT} 秒（正数=本机慢），超过上游 60 秒硬线：采购下单会全部 401 timestamp_expired；实测于 ${CLOCK_SCOPE}"
     elif [ "$ABS" -gt 30 ]; then
-      warn "本机时钟与外部差 ${DRIFT} 秒：还没到 60 秒硬线，但已过半，请校时（macOS: sudo sntp -sS time.apple.com）"
+      warn "本机时钟与外部差 ${DRIFT} 秒：还没到 60 秒硬线，但已过半，请校时（macOS: sudo sntp -sS time.apple.com）；实测于 ${CLOCK_SCOPE}"
     else
-      pass "本机时钟与外部差 ${DRIFT} 秒（阈值 60）"
+      pass "本机时钟与外部差 ${DRIFT} 秒（阈值 60）；实测于 ${CLOCK_SCOPE}"
+      if [ "$DEPLOY" != "container" ] && [ -f compose.prod.yaml ]; then
+        warn "  Web/Worker 若跑在本机容器里无需复验（共用内核时钟）；若跑在**另一台机器或 VM** 上，必须在那台上单独跑一次本脚本"
+      fi
     fi
   fi
 fi
