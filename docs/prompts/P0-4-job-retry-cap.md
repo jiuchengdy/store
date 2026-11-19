@@ -35,6 +35,13 @@
 5. 转 `failed` 后必须保证 job 不再被领取：`done=true` 且 `lockedUntil=null`；不要 `delete` job（排查时要能看）。
 6. 不要在这一步做任何金额动作（不退钱包、不退渠道），仅改状态 + 通知。
 
+### 3b. 测试数据与通知机制的硬约束（实测得出的，别猜）
+
+1. 触发器 `enqueue_order_email()`（`prisma/init.sql:40-48`）第一行就是 `IF NEW.contact_email IS NOT NULL AND ...`：**订单没有 `contact_email` 就一封都不入队，且零报错**。造测试单必须显式带 `contact_email`（正常下单路径由 `data.ts:124` 回落成 `userId ? user.email : ...`，所以线上多数有值）。
+2. `orders_channel_check` 只接受 `alipay / wechat / crypto / balance`；`orders_status_check` 只接受 `unpaid / processing / completed / needs_session / failed / refunded / cancelled`（`init.sql:368`、`:375`）。乱填直接撞约束。
+3. `external_amount` 是 NOT NULL 且无默认值，插单必须显式给。
+4. `email_outbox` 主键是 `order_id:status`，且 `UNIQUE(order_id, status)` + `ON CONFLICT DO NOTHING`（`init.sql:46`、`:592-593`）：**同一订单第二次进入同一状态，通知会被静默吞掉，买家收不到第二封信**。这是"只发一封"能轻松通过、而"该发两封发不出"的反向陷阱，见第 4 节第 8 条。
+
 ## 4. 验收判据（@u5c0f-q 按此打）
 
 1. 造一个永远失败的上游（mock 抛永久性错误）：连续 tick 到第 20 次后，订单 `status='failed'`、`failureReason='fulfillment_retry_exhausted'`、job `done=true`。
@@ -43,6 +50,9 @@
 4. `completed` / `refunded` / `cancelled` / `needs_session` 四种状态各自造一条 job：达到上限也**不被改成** `failed`。
 5. `needs_session` 的计数语义：多次 `needs_session` 往返不计入 20 次上限（用例说明清楚即可）。
 6. 上限触发后，`job.lastError` 是白名单内的 code（不是上游原文、不是 null）。
+7. `contact_email` 为空的订单转 `failed` 时：**后台必须有可见提示**（例如 `audit` 一条「通知未发送：缺少联系邮箱」或后台列表标记），不允许"什么都没发生"。
+8. 同一订单两次不同时段进 `failed`（`failed` → 人工改回 `processing` → 再次 `failed`）：买家**必须收到两封**通知（对第二封做一个唯一键变体，例如 `id = order_id:status:attempt` 或独立的通知表）。
+   - 若不改表结构而无法实现，则必须在交付里**明确写为已知限制**，并保证第二次进 `failed` 时后台有可见提示「通知被唯一键抑制」——不允许静默。
 
 ## 5. 旧断言怎么处理
 

@@ -18,8 +18,11 @@
   - 订单状态不是 `unpaid` 时抛 `ApiError(409, '订单状态不允许收款')` —— **sweeper 必须把 409 当作「已被回调入账」正常忽略，不是错误**
 - 创建支付时 `aoid` 已存进 `orders.payment_id`（`payments.ts:createPayment`），所以 sweeper 有查询键。
 - 配置读取：`src/server/integrations/config.ts:integration(provider, revision)` 返回 `public + secrets` 合并后的 `Record<string,string>`。
-- **陷阱**：`saveIntegration` 只保留 `publicKeys[provider]` 白名单里的字段（`config.ts:108-119`、`config.ts:175`）。不先加白名单，新开关会在每次后台保存时被**静默丢弃**。
+- **陷阱一**：`saveIntegration` 只保留 `publicKeys[provider]` 白名单里的字段（`config.ts:108-119`、`config.ts:175`）。不先加白名单，新开关会在每次后台保存时被**静默丢弃**。
+- **陷阱二**：同一个 `saveIntegration` 在 `config.ts:223-226` 要求 `publicKeys` 与 `secretKeys` 的**所有字段都非空**才允许启用渠道。把开关塞进 `publicKeys` 的第二个后果是：运维不填开关就**无法启用这个渠道**，而且提示语只有「请先填写完整配置再启用」，没人知道要填什么。
+- **因此（已拍板）**：能力开关**不塞 `publicKeys`**，存成独立字段（integration 的 `public` JSON 里单独命名空间，或等价机制），**缺省 `false`**。要求：全新环境不填开关也能正常启用渠道。
 - 现在只有 GMPay 有查询兜底（`confirmGmpayReceipt`），XorPay / 易支付没有。
+- 状态语义一律走统一映射层，见 `docs/prompts/APPENDIX-payment-status-mapping.md`（7 个统一语义：`CREDITED` / `PAID_UNCREDITED` / `NOT_PAID` / `AWAITING_SELECTION` / `EXPIRED` / `MANUAL_REVIEW` / `ORDER_NOT_FOUND`）。**厂商原始状态值不得当业务状态往外报。**
 
 ## 2. 上游语义（已由 @u5c0f-i 按官方文档核对，直接采信）
 
@@ -42,7 +45,7 @@ XorPay 查询：`GET https://xorpay.com/api/query/{aoid}`，**无需签名/密�
 
 | 文件 | 改动 |
 |---|---|
-| `src/server/integrations/config.ts` | `publicKeys` 给 `xorpay`/`gmpay`/`epay_v1`/`epay_v2` 增加 `supportsQuery`、`supportsRefund`（值 `'true'`/`'false'`，缺省视为 `false`） |
+| `src/server/integrations/config.ts` | 能力开关按上面「独立字段 + 缺省 false」落地，**不要加进 `publicKeys`/`secretKeys` 白名单** |
 | `src/server/integrations/payments.ts` | 新增 `queryPaymentStatus(order, config)`，按 provider 分派：xorpay 走 `GET /api/query/{aoid}`；gmpay 走现有 `confirmGmpayReceipt`（返回已核实/未支付/异常）；epay 无实现 → 返回 `unsupported` |
 | `src/server/payment-sweeper.ts`（新） | 扫单逻辑：挑 `status='unpaid'` 且 `payment_id` 非空且 `created_at < now-10min` 的订单，按 integration 的 `supportsQuery` 过滤，单次上限 20 单，逐单 `advisoryLock(判定并处理)` |
 | `src/server/worker-tasks.ts` | `tick()` 里增加一次 `sweepUnpaidPayments()`（每 tick 只做一次，不要按分钟硬等） |
@@ -59,6 +62,8 @@ XorPay 查询：`GET https://xorpay.com/api/query/{aoid}`，**无需签名/密�
    - `payed` / `success` → 构造 `Receipt{ orderId, transactionId: aoid, amount, paid: true, channel: order.channel }`，调 `acceptPayment(provider, order.integrationId, receipt)`；捕获 409 视为已入账。
    - `fee_error` → `riskEvent(scene='payment', action='manual_review', reasonCodes=['FEE_ERROR'])`，**不入账、不改订单状态**。
    - `not_exist` → `riskEvent(scene='payment', action='alert', reasonCodes=['NOT_EXIST'])`。
+   - `AWAITING_SELECTION`（占位单，买家还没在收银台选链/币种，尚未生成收款地址）→ **静默，不报警、不计死单**。这是常态，不是异常。
+   - **配置类 400**（Epusdt `10016` 资产不存在 / `10017` 服务商未启用 / `10018` 配置不完整 / `10019` 不支持该币种或网络）→ 一律 `MANUAL_REVIEW` + 配置类告警，**禁止当作"查询失败稍后重试"**。对配置错误每 10 分钟重试一次，就是 P0#2 那个病的翻版。
    - `new` / `expire` / `unsupported` → 静默。
    - 网络/HTTP 异常 → 单条跳过，写 `lastError` 级别日志，不抛到 tick。
 4. 查询是只读 GET，不需要密钥，**不要缓存结果、不要重试同一次 tick 内**。
@@ -72,7 +77,9 @@ XorPay 查询：`GET https://xorpay.com/api/query/{aoid}`，**无需签名/密�
 4. `fee_error`：不入账、落人工，订单仍是 `unpaid`。
 5. `not_exist` 三家形态（xorpay `not_exist` / epusdt `10008` / edge 400）各自喂一条，**都进同一条告警通道**。
 6. `supportsQuery=false` 的渠道：一次 tick 内 0 次外部请求，且有且仅有一条能力警示。
-7. 后端集成页保存后重新读取，`supportsQuery` 仍然存在（验证白名单已加，没被静默丢弃）。
+7. 后端集成页保存后重新读取，能力开关仍然存在（没被静默丢弃）；且**全新环境不填任何开关也能正常启用渠道**（验证没塞进 `publicKeys`）。
+8. `AWAITING_SELECTION`（占位单）：sweeper 零告警、零入账、订单状态不变；连跑多轮 tick 也不产生任何 riskEvent。
+9. Epusdt `10016/10017/10018/10019` 各自喂一条：落 `MANUAL_REVIEW` + 配置类告警，**且下一轮 tick 不再对同一单发起请求**。
 
 ## 6. 命令与基线（必须全绿才算交付）
 
