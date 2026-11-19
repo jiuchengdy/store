@@ -1636,7 +1636,11 @@ function AdminContent() {
                     </Button>
                     <p className="tiny muted">后台每小时获取汇率，订单以确认时的人民币价格为准。</p>
                     <h3>服务联系</h3>
-                    <Form.Item name="supportEmail" label="支持邮箱">
+                    <Form.Item
+                      name="supportEmail"
+                      label="支持邮箱"
+                      extra="部署者自配置项：下游代理商自托管时请改为自己的邮箱；留空将导致站点提示买家暂停购买。"
+                    >
                       <Input type="email" placeholder="support@example.com" />
                     </Form.Item>
                     <Form.Item
