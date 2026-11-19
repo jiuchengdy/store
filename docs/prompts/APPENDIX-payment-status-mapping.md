@@ -138,3 +138,30 @@ curl -s -o /dev/null -w 'order-query=%{http_code}\n'  https://<域名>/payments/
 - **易支付具体服务商的 act 支持清单**：需用户提供签约服务商名称与文档。
 - **GMPay 接的是 Epusdt 还是 edge**：决定 P0#0 改不改接口（§2 的判定法）。
 - **XorPay 退款结果未知时的处置**：官方无幂等键，重试有重复退款风险，只能人工核实渠道后台后登记。
+
+---
+
+## 8. AICDK（兑换上游）：无公开文档，只能靠实测建立事实
+
+**AICDK 没有对外 API 文档。** 我们代码里的 8 个端点（`/redemptions/previews`、`/redemptions/preflights`、`/redemptions`、`/redemptions/{id}`、`/redemptions/{id}/account-session`、`/replacements`、`/replacements/previews`、`/account-checks`）与 `Idempotency-Key`、`retry_after`、`error.uncertain` 的语义，**全部只能内部自洽，没有任何外部参照**——与三家支付不同，这里不存在「照文档核对」这条路。
+
+它又是四个外部依赖里**权限最高**的一个：接收买家的 ChatGPT Session JSON / accessToken（等于账号控制权）。支付渠道最坏只能动钱。
+
+### 因此上线前必须在对方环境实测这五条（否则全部假设都不成立）
+
+| # | 实验 | 合格标准 |
+|---|---|---|
+| 1 | **幂等键真的生效吗**：同 `requestId` + 同 `Idempotency-Key` 连发两次 `/redemptions` | 上游只产生**一笔**兑换；回读 `?client_request_id=&limit=2` 只有一条 |
+| 2 | **uncertain 之后用同键重试** | 返回同一订单 / 明确"已处理"，**不得产生第二次兑换** |
+| 3 | **超时阈值**：把响应拖过我们 30 秒超时 | 确认超时后上游是"未执行"还是"可能已执行"——这决定 `uncertain` 的默认假设 |
+| 4 | **对方留存 Session 多久**：提交后定时调 `/account-session` | 记录"多久之后取不到了"，这个窗口就是 `/privacy` 能承诺的上限 |
+| 5 | **拒绝路径**：无库存 / 账号异常 / 套餐不支持 | 错误码是否稳定可枚举；**被拒是否消耗卡密**（消耗了就是隐形的货损） |
+
+**1 和 2 是整套重试逻辑的地基。** 我们目前"重试是安全的"这个结论，前提是**上游真的实现了幂等去重**——而这个前提我们无法从文档验证。代码里 `?client_request_id=…&limit=2` 主动要两条记录，本身就说明作者预期过"同一请求可能产生两条"，这条线索应当在实验 1 里被证伪或证实。
+
+### 对 uncertain 单的硬约束
+
+- 重试必须复用同一个 `Idempotency-Key`（`${requestId}-v${attempt}`），**`uncertain` 分支不递增 attempt**；任何新增重试/补偿逻辑**绝对不许递增 `fulfillmentAttempt` 或换 `requestId`**——键一变，上游无法去重，就是"上游成功了 + 我们重发"= 重复交付、白送一单。
+- **uncertain 的定性只认向上游查询回读，不认本地状态**：本地只有"结果不明"，只有回读能分清"上游做了我们没收到"（不能再补发）和"上游没做"（必须补发）。这两种处置完全相反，混在一个状态里必然出错。
+- 对账视图给 `uncertain` **单独一列**，不要混进"失败"。
+
