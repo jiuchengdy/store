@@ -1,5 +1,7 @@
 # 「原路退款」对外口径统一（待 @u5c0f-r 落地）
 
+> **状态：已落地**（提交 `ecde044`，2026-11-19）。实际改动 11 处，比本文档列的 9 处多两处（`product-copy.ts`、`lib.ts` 是 `.ts`，不在 tsx 范围内）——本文件第七节的验收断言已按这个教训修正。
+
 ## 为什么要改
 
 2026-11-19 定了加密货币退款按币退之后，`原路退款` 这个词在买家侧开始不成立：
@@ -38,18 +40,24 @@
 
 ## 验收
 
-1. 全站搜 `原路` 应只剩 `src/server/` 与 `src/refunds.ts` 的内部审计措辞：
+> **教训**：最初的断言只 grep `*.tsx`，会漏掉 `product-copy.ts` 与 `lib.ts` 这两个**买家可见但在 `.ts` 里**的文案。这是「检查对象 ≠ 生效对象」在验收脚本上的同款：grep 的范围不等于"买家能看见的范围"。现改为两条互补断言。
+
+1. 买家/客服可见的文案归零（两个扩展名都要查）：
    ```sh
-   grep -rn '原路' src --include=*.tsx | grep -v '\.test\.'   # 期望 0 行
+   grep -rn '原路' src --include=*.tsx | grep -v '\.test\.'                        # 期望 0
+   grep -rn '原路' src --include=*.ts | grep -v '\.test\.' | grep -v 'server/\|refunds.ts'   # 期望 0
    ```
-2. 真页面断言（起 dev 后 curl，不看源码）：
+2. 内部审计措辞**应当仍在**（故意保留，用于历史对账一致），用于确认没有误删：
    ```sh
-   curl -s "$BASE/help/payment" | grep -c '原路'      # 期望 0
-   curl -s "$BASE/"             | grep -c '原路'      # 期望 0
-   curl -s "$BASE/guide"        | grep -c '原路'      # 期望 0
+   grep -rn '原路' src --include=*.ts | grep -v '\.test\.'   # 期望 5 行，全在 server/services.ts 与 refunds.ts
    ```
-3. 改完与 `docs/support-playbook.md` 3.5 / 3.5a 对一遍：页面是公示、剧本是口头，**不一致时以页面为准并回头改剧本**。
+3. 真页面断言（起 dev 后 curl，不看源码）：
+   ```sh
+   for p in / /guide /help/payment /terms; do echo "$p: $(curl -s "$BASE$p" | grep -c '原路')"; done   # 期望全 0
+   curl -s "$BASE/help/payment" | grep -c '原数退回'   # 期望 1（crypto 启用时；停用时 0）
+   ```
+4. 改完与 `docs/support-playbook.md` 3.5 / 3.5a 对一遍：页面是公示、剧本是口头，**不一致时以页面为准并回头改剧本**。
 
 ## 归属
 
-文案由 @u5c0f-d 定（本文件即终稿），代码由 @u5c0f-r 改，@u5c0f-q 按上面三条断言验收。
+文案由 @u5c0f-d 定（本文件即终稿），代码由 @u5c0f-r 改（已落地 `ecde044`），@u5c0f-q 按上面四条断言验收。
