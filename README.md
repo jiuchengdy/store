@@ -85,6 +85,7 @@ bun run worker
 | [运维手册](docs/ops-runbook.md)                       | 部署更新、数据库变更顺序、备份与恢复演练、事故处置 |
 | [客服剧本](docs/support-playbook.md)                  | 买家问题定性依据、回复话术与升级条件               |
 | [上线阻塞清单](docs/GO-LIVE-BLOCKERS.md)              | 上线前必须完成项、负责人与验收判据                 |
+| [部署者自配置项](docs/DEPLOYER-SETTINGS.md)           | 交给下游代理商自托管前必须改的东西（品牌、邮箱等） |
 | [版本发布](docs/releasing.md)                         | GitHub 简介、发布检查、Release 与 GHCR 镜像        |
 
 ## 参与和反馈
