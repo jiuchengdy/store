@@ -215,3 +215,33 @@ v2.0.0 除商户路由外还有一套 `AdminJWT` 保护的管理端（`/admin/ap
 
 **验收可用的一条真实用例**：live 环境故意让回调失败一次（或直接打不通）→ 买家侧仍 `status=2` → 调 `resend-callback` → 我们修好的路由收到回调 → `acceptPayment` 落库、订单转已支付。这条同时覆盖 P0-B 与重投幂等（第二次重投应撞 `acceptPayment` 的 409，按「已入账」吞掉）。
 
+### 9.5 回调重试窗口到底多长（源码算出来的，不是估的）
+
+板上流传的「6 次约 6.5 小时」**与源码矛盾**，按 `src/mq/worker.go` 与 `src/config/config.go` 重算：
+
+- `callback_retry_base_seconds` 默认 **5**（`config.go:398-405`，<=0 时回落 5）；
+- `callbackRetryDelay(attempts)`：第 n 次间隔 = `base * 2^(n-1)`，**单次封顶 5 分钟**（`worker.go:306-320`）；
+- 重试条件是 `callback_num <= order_notice_max_retry`，而安装器默认 `order_notice_max_retry = 1`（`install/installer.go:87`）。
+
+所以：
+
+| maxRetry | 实际窗口 |
+|---|---|
+| 1（安装器默认） | 约 **5 秒** |
+| 6 | `5+10+20+40+80+160` ≈ **5 分钟** |
+| 6，但 base 被调大 | 每次最多 5 分钟 → 上限 **30 分钟** |
+| 78 | 才可能到 6.5 小时（每次 5 分钟） |
+
+**结论：任何「6 次」的配置，窗口都不可能超过 30 分钟。** 实例的真实 `order_notice_max_retry` 商户 API 读不到（属网关 `.env`），所以对外只能说「**≤30 分钟量级**」，不能写 6.5 小时。这直接影响首周巡检的 B 类判据：**30 分钟阈值已经落在重试窗口之外**，B 类命中基本就是真漏单，而不是「还没到」。
+
+### 9.6 B 类（付了但没入账）不需要 admin 凭据——用本地 `paymentId` 就能判
+
+巡检脚本最纠结的一点是「`unpaid` + 已点支付 + 有地址」既可能是买家放弃支付，也可能是真付了没回调。**网关能区分，而且不需要管理端凭据**：
+
+- 建单时我们把 `data.trade_id` 存成 `order.paymentId`（`createPayment` 返回值 → `acceptPayment:795` 也用它做一致性校验）；
+- `GET /pay/check-status/{trade_id}` 是**无签名公开接口**，直接拿 `paymentId` 就能查：`2`=已付、`1`=未付、`3`=已过期、`4`=占位单（没选链）。
+
+所以 B 类的正确处置是：**用本地 `paymentId` 打 `check-status` → `2` 才补入账（走修好的四态逻辑），`1`/`3`/`4` 直接判为未付**。只有 `paymentId` 为空的单（建单时响应丢了，即 10002 场景）才需要 admin 凭据按 `order_id` 反查。
+
+这条把「人工去网关后台查」从**每个人都要有 admin 权限**降级成**脚本自动判定**，也顺手消掉了「放弃支付被误补单」的风险——`check-status` 能明确说是 `1`，不用猜。
+
