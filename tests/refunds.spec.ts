@@ -97,7 +97,7 @@ test('admin refunds enforce channel capabilities, required notes and split amoun
   await expect(dialog.locator('.refund-breakdown')).toContainText('¥40.00')
   await dialog.getByRole('button', { name: '确认退款 ¥100.00' }).click()
   await expect(dialog).toBeHidden()
-  await expect(row('xorpay')).toContainText('已原路退款')
+  await expect(row('xorpay')).toContainText('已退款')
 
   await row('epay_v1').getByRole('button', { name: '处理退款' }).click()
   await expect(automatic).toBeDisabled()
@@ -164,7 +164,7 @@ test('admin refunds enforce channel capabilities, required notes and split amoun
   await row('待核实').getByRole('button', { name: '核实退款' }).click()
   await expect(automatic).toBeDisabled()
   await expect(automatic).toBeChecked()
-  await expect(dialog.getByRole('radio', { name: /原路退回/ })).toBeDisabled()
+  await expect(dialog.getByRole('radio', { name: /退回原支付方式/ })).toBeDisabled()
   await expect(dialog.getByRole('radio', { name: /退回站内余额/ })).toBeDisabled()
   const reconcile = dialog.getByRole('button', { name: '确认渠道已退款并登记' })
   await expect(reconcile).toBeDisabled()
