@@ -11,14 +11,20 @@ set -u
 DB_CONTAINER="${DB_CONTAINER:-store-db-1}"
 DB_USER="${DB_USER:-getgpt}"
 DB_NAME="${DB_NAME:-getgpt}"
+DEPLOY="auto"   # bare | container | auto
 while [ $# -gt 0 ]; do
   case "$1" in
     --db-container) DB_CONTAINER="$2"; shift 2 ;;
     --psql-user) DB_USER="$2"; shift 2 ;;
     --db) DB_NAME="$2"; shift 2 ;;
+    --deploy) DEPLOY="$2"; shift 2 ;;
     *) echo "unknown arg: $1" >&2; exit 2 ;;
   esac
 done
+# 部署形态决定「哪种密钥来源合法」，所以必须先判定形态，不能给跨形态的绿灯。
+if [ "$DEPLOY" = "auto" ]; then
+  if [ -f /.dockerenv ]; then DEPLOY="container"; else DEPLOY="bare"; fi
+fi
 
 FAIL=0
 q() { docker exec "$DB_CONTAINER" psql -U "$DB_USER" -d "$DB_NAME" -tAc "$1" 2>/dev/null; }
@@ -39,22 +45,42 @@ MAIL=$(q "select coalesce(body->>'supportEmail','') from settings where id=1;")
 if [ -n "$MAIL" ]; then pass "supportEmail = ${MAIL}（部署者自配置项，代理商须改成自己的）"
 else fail "supportEmail 为空：页脚不渲染「联系支持」，/help/payment 显示「请先暂停购买」"; fi
 
-echo "== 2. ENCRYPTION_KEY（丢了 = 历史卡密与提现账户永久解不开）=="
-# 合法来源有四种：环境变量 / .env / ENCRYPTION_KEY_FILE / .data/encryption.key
-# 只认其中一种会造成「合法部署永远 FAIL」的假警（同类 bug 已在 verify-credentials 里踩过）。
+echo "== 2. ENCRYPTION_KEY（丢了 = 历史卡密与提现账户永久解不开；形态：${DEPLOY}）=="
+# 合法来源有四种：环境变量 / .env / ENCRYPTION_KEY_FILE / .data/encryption.key。
+# 但「合法」取决于部署形态——容器化部署里 .data 不是合法来源（只读根文件系统写不进、
+# 打进镜像则随容器重建消失，后果等同换过密钥）。只认其中一种来源会造成「合法部署永远
+# 假 FAIL」，而不分形态则会给 .data 一个危险的 PASS：两种错都要避免。
 KEY_SRC=""
 KEY="${ENCRYPTION_KEY:-}"
-if [ -n "$KEY" ]; then KEY_SRC="环境变量 ENCRYPTION_KEY"
-elif [ -f .env ] && [ -n "$(grep -E '^ENCRYPTION_KEY=' .env | head -1 | cut -d= -f2-)" ]; then KEY_SRC=".env"
-elif [ -n "${ENCRYPTION_KEY_FILE:-}" ] && [ -s "${ENCRYPTION_KEY_FILE}" ]; then KEY_SRC="ENCRYPTION_KEY_FILE=${ENCRYPTION_KEY_FILE}"
-elif [ -s .data/encryption.key ]; then KEY_SRC=".data/encryption.key"
+if [ -n "$KEY" ]; then KEY_SRC="env"
+elif [ -f .env ] && [ -n "$(grep -E '^ENCRYPTION_KEY=' .env | head -1 | cut -d= -f2-)" ]; then KEY_SRC="envfile"
+elif [ -n "${ENCRYPTION_KEY_FILE:-}" ] && [ -s "${ENCRYPTION_KEY_FILE}" ]; then KEY_SRC="keyfile"
+elif [ -s .data/encryption.key ]; then KEY_SRC="dotdata"
 fi
-if [ -n "$KEY_SRC" ]; then
-  pass "密钥已配置，来源：${KEY_SRC}"
-  echo "        （必须另有独立离线第二份，且不得与数据库备份同机）"
-else
-  fail "没有任何密钥来源：live 模式会启动失败；demo 会临时生成一把，重启即旧密文全废"
-fi
+case "$KEY_SRC" in
+  env)     pass "密钥来源：环境变量 ENCRYPTION_KEY（容器化与裸机都合法）" ;;
+  envfile) pass "密钥来源：.env（容器化与裸机都合法）"
+           [ "$DEPLOY" = "container" ] && warn "容器化时请确认 .env 是以 env_file 注入，不是打进镜像层" ;;
+  keyfile) pass "密钥来源：ENCRYPTION_KEY_FILE=${ENCRYPTION_KEY_FILE}"
+           if [ "$DEPLOY" != "container" ]; then
+             pass "  裸机/Bun 直跑：该路径只需随发布保留即可"
+           elif [ -r /proc/self/mountinfo ]; then
+             if grep -qF "${ENCRYPTION_KEY_FILE}" /proc/self/mountinfo 2>/dev/null; then
+               pass "  该路径在挂载卷内（容器重建后仍在）"
+             else
+               fail "  该路径不在任何挂载卷内：容器重建即丢失，那批密文全部报废"
+             fi
+           else
+             warn "  无法自动确认该路径是否在持久化卷内，部署时请人工确认" ;
+           fi ;;
+  dotdata) if [ "$DEPLOY" = "container" ]; then
+             fail "密钥来源只有 .data/encryption.key，容器化部署不可用：只读根文件系统写不进、打进镜像则随容器重建消失（等同换过密钥 → 那批密文全废）。请改用 ENCRYPTION_KEY 或挂载卷内的 ENCRYPTION_KEY_FILE"
+           else
+             pass "密钥来源：.data/encryption.key（裸机/Bun 直跑合法）" ;
+           fi ;;
+  *)       fail "没有任何密钥来源：live 模式会启动失败；demo 会临时生成一把，重启即旧密文全废" ;;
+esac
+[ -n "$KEY_SRC" ] && echo "        （必须另有独立离线第二份，且不得与数据库备份同机）"
 
 echo "== 3. 支付/上游集成 =="
 ACTIVE=$(q "select string_agg(provider,',' order by provider) from integrations where active;")
