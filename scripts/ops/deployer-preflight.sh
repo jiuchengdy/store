@@ -40,10 +40,21 @@ if [ -n "$MAIL" ]; then pass "supportEmail = ${MAIL}（部署者自配置项，�
 else fail "supportEmail 为空：页脚不渲染「联系支持」，/help/payment 显示「请先暂停购买」"; fi
 
 echo "== 2. ENCRYPTION_KEY（丢了 = 历史卡密与提现账户永久解不开）=="
+# 合法来源有四种：环境变量 / .env / ENCRYPTION_KEY_FILE / .data/encryption.key
+# 只认其中一种会造成「合法部署永远 FAIL」的假警（同类 bug 已在 verify-credentials 里踩过）。
+KEY_SRC=""
 KEY="${ENCRYPTION_KEY:-}"
-[ -z "$KEY" ] && [ -f .env ] && KEY=$(grep -E '^ENCRYPTION_KEY=' .env | head -1 | cut -d= -f2-)
-if [ -n "$KEY" ]; then pass "ENCRYPTION_KEY 已设置（必须有独立离线第二份，不得与备份同机）"
-else fail "ENCRYPTION_KEY 未设置：会回落到临时生成的密钥，重启即全部密文失效"; fi
+if [ -n "$KEY" ]; then KEY_SRC="环境变量 ENCRYPTION_KEY"
+elif [ -f .env ] && [ -n "$(grep -E '^ENCRYPTION_KEY=' .env | head -1 | cut -d= -f2-)" ]; then KEY_SRC=".env"
+elif [ -n "${ENCRYPTION_KEY_FILE:-}" ] && [ -s "${ENCRYPTION_KEY_FILE}" ]; then KEY_SRC="ENCRYPTION_KEY_FILE=${ENCRYPTION_KEY_FILE}"
+elif [ -s .data/encryption.key ]; then KEY_SRC=".data/encryption.key"
+fi
+if [ -n "$KEY_SRC" ]; then
+  pass "密钥已配置，来源：${KEY_SRC}"
+  echo "        （必须另有独立离线第二份，且不得与数据库备份同机）"
+else
+  fail "没有任何密钥来源：live 模式会启动失败；demo 会临时生成一把，重启即旧密文全废"
+fi
 
 echo "== 3. 支付/上游集成 =="
 ACTIVE=$(q "select string_agg(provider,',' order by provider) from integrations where active;")
