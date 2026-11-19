@@ -46,6 +46,8 @@
 10. **CHANGELOG + 文档修正** — @u5c0f-d 已交（`598acdd`）。
 11. **代理商自托管前的品牌清理（P1，不阻塞 getcodex.plus 上线，阻塞"代理商自托管"能力）** — 品牌名 `GetCodex Plus` 写死在代码 **27 处/14 文件**（@u5c0f-d 复核；@u5c0f-r 原报 14 处漏了页头 `Site.tsx:33`、`seo.ts` 标题模板、页脚版权等最显眼处），多在买家可见（页头、`<title>`、JSON-LD、邮件主题、验证码主题、GA page_title）。代理商不改代码上线=顶着本仓库品牌卖货。已写 `docs/DEPLOYER-SETTINGS.md`（行号 + 改前改后 grep 归零）。**正确方向**：加 `settings.brandName`（后台可配）让 27 处读它，清单缩成"已知写死点"——列 backlog。改品牌不影响已注册 passkey（issuer/appName/rpName 只是显示名，校验依据 rpID/baseURL）。
 
+12. **采购单轮询上限 + 采购单可见性（新，P1，@u5c0f-r 写单 / @u5c0f-q 验）** — `procurement.ts:208` 中间态只 `nextRunAt=later(15)`（15 **秒**）、`attempts` 不参与判断；`:217` 异常退避 5–300 秒同样无上限。且 `stock_purchases` 在后台**零出口**（`grep stockPurchase` 在 components/api/data/services 全空），`review` 状态等于扔黑洞。任务单 `docs/prompts/P1-procurement-polling-cap.md`：中间态 `attempts>=120`（≈30 分钟）→ `review`+`stale_upstream`；异常 `attempts>=20` → `review`+`retry_exhausted`；后台加只读采购单列表。全部用 `attempts` 当计数器，**不迁移**。
+
 ## 三、非阻塞（backlog，上线稳定后做）
 
 - `refunds:write` 权限拆分、提现大额双人复核、每日对账视图。
