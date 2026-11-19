@@ -68,10 +68,15 @@ fi
 GMPAY_BASE="${GMPAY_BASE_URL:-$(q "select coalesce(public->>'url','') from integrations where provider='gmpay' limit 1")}"
 GMPAY_BASE="${GMPAY_BASE%/}"
 
-check_status() {   # $1=trade_id；查不到返回空串
+check_status() {   # $1=trade_id；2/1/3/4 或 10008，查不到返回空串
   [ -z "$GMPAY_BASE" ] && { echo ""; return; }
-  curl -s --max-time 8 "${GMPAY_BASE}/pay/check-status/$1" 2>/dev/null \
-    | sed -n 's/.*"status"[[:space:]]*:[[:space:]]*\([0-9][0-9]*\).*/\1/p' | head -1
+  local body
+  body=$(curl -s --max-time 8 "${GMPAY_BASE}/pay/check-status/$1" 2>/dev/null)
+  # 真实网关对不存在的单返回 HTTP 400 + {"status_code":10008,...}（实测），不是 404、也没有 status 字段
+  case "$body" in
+    *'"status_code":10008'*) echo "10008"; return ;;
+  esac
+  printf '%s' "$body" | sed -n 's/.*"status"[[:space:]]*:[[:space:]]*\([0-9][0-9]*\).*/\1/p' | head -1
 }
 
 SQL_A="status='processing' and created_at < now() - interval '${MINUTES} minutes'"
@@ -112,8 +117,8 @@ if [ "$A" != "0" ]; then
 fi
 
 # ---- B 类：逐单查网关状态自动分流 ----
-B_PAID=0; B_UNPAID=0; B_EXPIRED=0; B_PLACEHOLDER=0; B_UNKNOWN=0; B_NOPID=0
-B_DETAIL_PAID=""; B_DETAIL_UNKNOWN=""; B_DETAIL_NOPID=""
+B_PAID=0; B_UNPAID=0; B_EXPIRED=0; B_PLACEHOLDER=0; B_UNKNOWN=0; B_NOPID=0; B_NOTFOUND=0
+B_DETAIL_PAID=""; B_DETAIL_UNKNOWN=""; B_DETAIL_NOPID=""; B_DETAIL_NOTFOUND=""
 B_ROWS=$(q "select id || '|' || coalesce(payment_id,'') from orders where $SQL_B order by created_at")
 B_TOTAL=0
 if [ -n "$B_ROWS" ]; then
@@ -130,6 +135,8 @@ if [ -n "$B_ROWS" ]; then
       1) B_UNPAID=$((B_UNPAID + 1)) ;;
       3) B_EXPIRED=$((B_EXPIRED + 1)) ;;
       4) B_PLACEHOLDER=$((B_PLACEHOLDER + 1)) ;;
+      10008) B_NOTFOUND=$((B_NOTFOUND + 1))
+             B_DETAIL_NOTFOUND="${B_DETAIL_NOTFOUND}  ${OID}（trade_id ${PID}）：网关返回 10008 无此单，没收到过钱"$'\n' ;;
       *) B_UNKNOWN=$((B_UNKNOWN + 1)); B_DETAIL_UNKNOWN="${B_DETAIL_UNKNOWN}  ${OID}（trade_id ${PID}）：网关无有效响应，需人工核对"$'\n' ;;
     esac
   done <<EOF
@@ -138,7 +145,7 @@ EOF
 fi
 
 echo
-echo "[B 疑似付了但没入账] ${B_TOTAL} 单（网关分流：已付 ${B_PAID} / 未付 ${B_UNPAID} / 过期 ${B_EXPIRED} / 占位未选链 ${B_PLACEHOLDER} / 未核实 ${B_UNKNOWN} / 无 trade_id ${B_NOPID}）"
+echo "[B 疑似付了但没入账] ${B_TOTAL} 单（网关分流：已付 ${B_PAID} / 未付 ${B_UNPAID} / 过期 ${B_EXPIRED} / 占位未选链 ${B_PLACEHOLDER} / 网关无此单 ${B_NOTFOUND} / 未核实 ${B_UNKNOWN} / 无 trade_id ${B_NOPID}）"
 if [ "$B_PAID" != "0" ]; then
   printf '%s' "$B_DETAIL_PAID" | sed 's/^/  /'
   echo "  处置：status=2 已付但本地未入账 → 按 runbook §7.3 补入账，必须先核金额"
@@ -150,6 +157,10 @@ fi
 if [ "$B_NOPID" != "0" ]; then
   printf '%s' "$B_DETAIL_NOPID" | sed 's/^/  /'
   echo "  处置：payment_id 为空只能走网关管理端按 order_id 反查（admin 凭据不进应用/脚本，由所有者操作）"
+fi
+if [ "$B_NOTFOUND" != "0" ]; then
+  printf '%s' "$B_DETAIL_NOTFOUND" | sed 's/^/  /'
+  echo "  处置：网关没有这个 trade_id ⇒ 该单在网关侧从未建立支付、没收到钱，**不用补单**；若单据看起来本该付过，先核对 payment_id 是否被写错"
 fi
 if [ "$B_UNPAID" != "0" ] || [ "$B_EXPIRED" != "0" ] || [ "$B_PLACEHOLDER" != "0" ]; then
   echo "  （未付/过期/占位 = 买家没付完，正常，不计入告警）"
