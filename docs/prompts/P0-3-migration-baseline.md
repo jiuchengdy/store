@@ -14,14 +14,15 @@
 - **真正的 schema 源头是 `prisma/init.sql`**（335 列 / 393 约束 / 85 索引 / 6 触发器 / 6 函数全在里面），`prisma/migrations` 是空的（历史被 `e7dcd59` 移除过）。
 - `scripts/verify-database.ts`（`bun run db:verify`）是**精确比对**：多一列就红（`Unexpected columns: ...`），少一条约束也红。
 - `scripts/ops/gen-contract.ts` 已存在：`bun scripts/ops/gen-contract.ts` 从活库重生成 `prisma/database-contract.json`；`--check` 只校验不写。
-- `compose.prod.yaml`：**只有 postgres 有 healthcheck（`pg_isready`），web 没有任何 healthcheck，worker 显式 `disable: true`**。所以"新镜像 + 旧库"不会让容器起不来，真正症状是运行时 500。别依赖健康检查拦住顺序错误。
+- 健康探针现状（**我第一版写错，这里已更正**）：web **有** HEALTHCHECK，来自镜像 `Dockerfile:59-60`（`docker-entrypoint.sh healthcheck`），compose 没覆盖它。但探针打的是 `/robots.txt`（`docker-entrypoint.sh:24`），**只判断 HTTP 200，完全不碰数据库**；而且 `compose.prod.yaml` 里没有任何服务等 web 健康、也没有 autoheal，**这个状态没人消费**。worker 则是显式 `healthcheck: disable: true`。
+- 推论：新镜像 + 旧库时，容器照样 Up、探针照样绿（`/robots.txt` 不查库），症状是**运行时 500**，错误原文是 `Raw query failed. Code: '42703'. Message: 'column "x" does not exist'`。所以顺序错误没有任何自动门禁会拦，只能靠纪律 + 这条排查口诀。
 - 关键业务约束（改表时不能碰）：`orders_channel_check`（`alipay/wechat/crypto/balance`）、`orders_status_check`（7 个状态）、`orders_discount_check`（`list_amount - discount_amount = amount`）等都在 `init.sql:368-375`。
 
 ## 2. 要交付的东西
 
 | 文件 | 内容 |
 |---|---|
-| `prisma/init.sql`（追加，不重写） | 新建 `schema_version`（`version int primary key`, `applied_at timestamptz not null default now()`, `checksum text not null`）· **只追加，不改动已有对象** |
+| `prisma/init.sql`（追加，不重写） | 新建 `schema_version`：`version int primary key` · `checksum text not null`（SQL 文件哈希）· `applied_at timestamptz not null default now()` · **`applied_by text not null`（记录部署用的镜像 digest，不是 tag：tag 会被覆盖，digest 不会）** — **只追加，不改动已有对象** |
 | `prisma/migrations/0001_baseline.sql` | 基线迁移：只创建 `schema_version` 并写入 `version=1`（因为现状已经等于 init.sql） |
 | `scripts/migrate.ts` | 迁移执行器：按文件名排序取未应用的 `NNNN_*.sql` → **每个文件一个事务**，跑完写 `schema_version`（含内容 checksum）→ 失败整体回滚，库停在旧版本 |
 | `package.json` | 新增 `db:migrate` 脚本 |
@@ -36,7 +37,7 @@
 3. 幂等：同一迁移重复执行不报错、不重复记账（查 `schema_version` 决定是否执行，同时用 checksum 检出"已应用的 SQL 被偷偷改过"→ 直接报错退出，不要静默重跑）。
 4. 事务边界：**一个文件一个事务**，禁止把多个文件包进一个大事务（一次失败会倒退到很远）。
 5. 明确不支持「自动回滚脚本」：回滚 = 恢复备份（`ops-runbook.md` 已覆盖）。但必须支持「迁移失败 → 停在旧版本且 `schema_version` 没前进」。
-6. expand-contract 纪律写进文档：**只加不删**（先加列/新表，下一版本才清理旧列），否则旧镜像会在滚动窗口内 500。
+6. expand-contract 纪律写进文档：**只加不删**（先加列/新表，下一版本才清理旧列），否则旧镜像会在滚动窗口内 500。**收缩版本单独发一个 release，且发布前先跑一次恢复演练**——收缩之后再回滚旧镜像，等于让旧代码对着一个它不认识的库形状跑，这是最难救的组合。
 
 ## 4. 部署顺序（写进 `docs/database.md` 和 runbook，别只写在代码注释里）
 
@@ -49,7 +50,9 @@
 6) 旧镜像必须仍能正常跑（expand 阶段只加不删）
 ```
 
-反了会怎样（实测）：新镜像 + 旧库 → 查询新列直接 500；**不是**健康检查变红、也不是容器起不来，因为没有 web healthcheck。所以顺序错误的表现是「网站开始报错」，排查方向会很偏。
+反了会怎样（实测）：新镜像 + 旧库 → 查询新列直接 500，错误原文 `Raw query failed. Code: '42703'. Message: 'column "x" does not exist'`。**不是**容器起不来，也不是探针变红——探针打的是 `/robots.txt`，不碰数据库，而且没人消费这个状态。所以顺序错误的表现是「网站开始报错」，运维会去查镜像/网络/连接。
+
+**排查口诀（写进 runbook）**：看到 `42703 / column ... does not exist` 就查库迁移了没有，别查镜像和网络。
 
 ## 5. 验收判据（@u5c0f-q 按此打，实现者不参与验收）
 
@@ -58,7 +61,7 @@
 3. 同一迁移重复执行 → 不报错、`schema_version` 不重复记账（幂等）。
 4. **迁移中途失败 → 事务回滚、库停在旧版本、`schema_version` 不变**（故意在第二个语句写语法错来验，这条最容易漏）。
 5. 迁移完成后，**旧镜像仍能正常跑**（expand 阶段只加不删的实证）。
-6. 已应用迁移的 SQL 被改过 → `db:migrate` 必须报错退出（checksum 检出），不能静默跳过。
+6. 已应用迁移的 SQL 被改过 → `db:migrate` 必须报错退出（checksum 检出），不能静默跳过；报错信息必须能指出**哪一版、何时应用、哪次部署（`applied_by` 的镜像 digest）**。
 
 ## 6. 命令与基线
 
