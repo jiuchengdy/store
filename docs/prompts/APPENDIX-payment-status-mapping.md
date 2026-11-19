@@ -136,7 +136,6 @@ curl -s -o /dev/null -w 'order-query=%{http_code}\n'  https://<域名>/payments/
 ## 7. 未覆盖 / 待确认
 
 - **易支付具体服务商的 act 支持清单**：需用户提供签约服务商名称与文档。
-- **GMPay 接的是 Epusdt 还是 edge**：决定 P0#0 改不改接口（§2 的判定法）。
 - **XorPay 退款结果未知时的处置**：官方无幂等键，重试有重复退款风险，只能人工核实渠道后台后登记。
 
 ---
@@ -164,4 +163,39 @@ curl -s -o /dev/null -w 'order-query=%{http_code}\n'  https://<域名>/payments/
 - 重试必须复用同一个 `Idempotency-Key`（`${requestId}-v${attempt}`），**`uncertain` 分支不递增 attempt**；任何新增重试/补偿逻辑**绝对不许递增 `fulfillmentAttempt` 或换 `requestId`**——键一变，上游无法去重，就是"上游成功了 + 我们重发"= 重复交付、白送一单。
 - **uncertain 的定性只认向上游查询回读，不认本地状态**：本地只有"结果不明"，只有回读能分清"上游做了我们没收到"（不能再补发）和"上游没做"（必须补发）。这两种处置完全相反，混在一个状态里必然出错。
 - 对账视图给 `uncertain` **单独一列**，不要混进"失败"。
+
+---
+
+## 9. GMPay 结案：Epusdt v2.0.0（2026-11-19 定案）
+
+
+判据（两条独立，均已在线上复核）：
+
+1. 判定法 §2 打 `GET /pay/check-status/x` → 400 带业务码；打 `/payments/gmpay/v1/order/query` → 404。edge 相反。
+2. v2.0.0 的 `wiki/API.md`（仓库内官方文档，自述"以当前代码路由为准"）路由总览**只有 8 条**，无 `order/query`。
+
+### 9.1 上游官方文档给出的硬事实（可直接引用，不必再读代码）
+
+| 事实 | 出处 | 对我们的含义 |
+|---|---|---|
+| `order_id` **最长 32 字符**，且不能重复 | `wiki/API.md` 创建交易参数表 | `services.ts` 的 `o_`+32 位 hash = 34 字符**必然被拒**（实测 10009）。这是文档规定，不是实现瑕疵，不要指望上游放宽 |
+| 查状态唯一入口 `GET /pay/check-status/{trade_id}`，返回 `data` 只有 `trade_id`+`status` | 同上 | 现代码的四重比对（currency/order_id/amount）永远不成立；金额交叉核只能另打 `GET /pay/checkout-counter-resp/{trade_id}` |
+| `status` 语义：`1` 等待支付 / `2` 成功 / `3` 过期 / `4` 等待选链选币 | 同上 | 与 §3 映射表一致 |
+| 订单不存在 = HTTP 400 + `status_code: 10008` | 错误码表 | 我 §3 写的 10008 已核实正确 |
+| `10009` = 无法解析参数（含 `order_id` 超长、token/network 只缺一个） | 错误码表 | 线上实测的 10009 就是它 |
+| `10002` = 支付交易已存在，请勿重复创建 | 错误码表 | **P0-A 修复的隐性坑**：压缩订单号时若不同订单可能映射到同一 32 字符 id，网关直接 10002；压缩必须保持单射，并考虑新老订单号并存期的唯一性 |
+| 回调重试：`order_notice_max_retry` 次，指数退避，最大 5 分钟 | 回调章节 | P0-B 的赔偿窗口有了具体量级：我们一直 503 → 重试耗尽 → 单子永久停在待付款，事后只能人工补 |
+| 签名：HMAC-SHA256，参数名 ASCII 升序，排除 `signature` 与空值，`pid` 必须参与 | 签名章节 | 与 `gmpaySignature` 一致；官方另注明"已硬切 HMAC-SHA256，不接受旧版 MD5，无回退" |
+| 官方要求 `application/x-www-form-urlencoded` 才能保住字符串格式（JSON 里 `100.00` 会被规范化成 `100`，改变签名串） | 签名注意事项 | 我们的 `post()` 用的正是 form-urlencoded ✅ **这条不用改**，但如果将来有人改成 JSON 会静默验签失败 |
+
+### 9.2 `payment_url` 就是 Epusdt 收银台，占位单也有
+
+
+所以 P2 的"转化率"问题不是"我们页面上让买家填地址"，而是**买家被跳到第三方收银台，还要在那一屏自己选链选币**（`POST /pay/switch-network` 由收银台前端调用）。这决定了产品口径：想省掉那一屏，只能在下单时显式传 `token`+`network`（两者必须同传或同缺，只传一个 = 10009）。
+
+### 9.3 上游新发现：Epusdt v2 自带易支付兼容协议
+
+v2.0.0 路由表里有 **`GET/POST /payments/epay/v1/order/create-transaction/submit.php`**（EPay 兼容，`sign` = 除 `sign`/`sign_type` 外非空参数 ASCII 拼接 + `secret_key` 的 MD5，回调 GET 带 `trade_status=TRADE_SUCCESS`）。
+
+含义：**我们自托管的这台 Epusdt 实例，本身就能当"易支付上游"用。** 如果将来易支付服务商涨价、跑路或风控，可以把 `epay_v1` 通道切到自己的实例，而不必换代码结构（只需核对 `out_trade_no`/`money`/`type`/`sign_type=MD5` 字段与我们的 v1 适配是否逐字对齐）。这是当前四家外部依赖里唯一存在"备胎"的一家，值得记进上线风险表。**待办：把 `epay_v1` 适配与本实例 submit.php 做一次字段级比对（未做）。**
 
