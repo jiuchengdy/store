@@ -199,3 +199,19 @@ v2.0.0 路由表里有 **`GET/POST /payments/epay/v1/order/create-transaction/su
 
 含义：**我们自托管的这台 Epusdt 实例，本身就能当"易支付上游"用。** 如果将来易支付服务商涨价、跑路或风控，可以把 `epay_v1` 通道切到自己的实例，而不必换代码结构（只需核对 `out_trade_no`/`money`/`type`/`sign_type=MD5` 字段与我们的 v1 适配是否逐字对齐）。这是当前四家外部依赖里唯一存在"备胎"的一家，值得记进上线风险表。**待办：把 `epay_v1` 适配与本实例 submit.php 做一次字段级比对（未做）。**
 
+### 9.4 商户 API 没有反查，但**管理员 API 有**——10002 与 P0-B 都可恢复
+
+v2.0.0 除商户路由外还有一套 `AdminJWT` 保护的管理端（`/admin/api/v1/auth/login` 取 JWT），与商户 `pid`/`secret` 是**两套不同等级的凭据**：
+
+| 端点 | 用途 | 对我们的意义 |
+|---|---|---|
+| `GET /admin/api/v1/orders?keyword=<值>` | 按 **trade_id 或 order_id** 关键字搜单（分页） | **商户 API 没有的反查在这里**。10002「订单已存在但 paymentId 丢了」可以按 order_id 找回 trade_id，不是死局 |
+| `GET /admin/api/v1/orders/{trade_id}` | 单笔详情 | 拿状态/金额/notify_url 核对 |
+| `POST /admin/api/v1/orders/{trade_id}/resend-callback` | 把 `callback_confirm` 翻回 NO，MQ worker 下一轮重投 | **P0-B 的批量恢复手段**：修好 `confirmGmpayReceipt` 后不必人工改库，重投即自动入账。限制：仅 `status=2`（网关侧已成功）且 `notify_url` 非空——正好就是 P0-B 的场景 |
+| `POST /admin/api/v1/orders/{trade_id}/mark-paid` | 人工补单，body 需 `block_transaction_id` | 最后手段；用了就绕开链上核验，必须留痕 |
+| `POST /admin/api/v1/orders/{trade_id}/close` | 人工关单为过期并释放锁 | 清理测试占位单 |
+
+**边界（重要）**：admin 凭据是网关最高权限（能补单、能关单），**绝不能存进 store 应用或后台集成配置**，只用于运维 runbook 与一次性恢复脚本。给 `confirmGmpayReceipt` 做恢复逻辑时不要顺手把 admin 账号塞进去。
+
+**验收可用的一条真实用例**：live 环境故意让回调失败一次（或直接打不通）→ 买家侧仍 `status=2` → 调 `resend-callback` → 我们修好的路由收到回调 → `acceptPayment` 落库、订单转已支付。这条同时覆盖 P0-B 与重投幂等（第二次重投应撞 `acceptPayment` 的 409，按「已入账」吞掉）。
+
