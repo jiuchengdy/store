@@ -116,8 +116,8 @@ if [ -n "${APP_IMAGE:-}" ]; then
     -e APP_MODE=demo -e APP_URL=http://localhost \
     "$APP_IMAGE" sh -c 'bun scripts/ops/verify-credentials.ts' || PROBE_STATUS=$?
 else
-  DATABASE_URL="$DRILL_URL" ENCRYPTION_KEY="${ENCRYPTION_KEY:-}" PROBE_ROWS="${PROBE_ROWS:-1}" \
-    bun scripts/ops/verify-credentials.ts || PROBE_STATUS=$?
+  DATABASE_URL="$DRILL_URL" ENCRYPTION_KEY="${ENCRYPTION_KEY:-}" ENCRYPTION_KEY_FILE="${ENCRYPTION_KEY_FILE:-}" \
+    PROBE_ROWS="${PROBE_ROWS:-1}" bun scripts/ops/verify-credentials.ts || PROBE_STATUS=$?
 fi
 
 case "$PROBE_STATUS" in

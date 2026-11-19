@@ -23,6 +23,7 @@
 //   3 nothing to probe (no inventory rows — cannot prove anything)
 //   4 ENCRYPTION_KEY not provided to the probe
 //   5 probe infrastructure error (database unreachable, bad query) — NOT a key problem
+import { readFile } from 'node:fs/promises'
 import { db } from '../../src/server/db'
 import { openCredential } from '../../src/server/credential-storage'
 
@@ -31,11 +32,28 @@ type Probe = { role: string; id: string; code: string }
 const extra = Number(process.env.PROBE_ROWS ?? '1')
 const extraCount = Number.isFinite(extra) && extra > 1 ? Math.floor(extra) - 2 : 0
 
-if (!process.env.ENCRYPTION_KEY) {
-  console.error('ENCRYPTION_KEY is not set: a probe without the real key would use a throwaway one')
-  console.error('pass the production key into this probe, otherwise the result is meaningless')
+// A deployment may legitimately keep the key in a file instead of an env var:
+// demo/dev uses .data/encryption.key (32 raw bytes), and ops can point at a
+// mounted secret. Accept both, but never invent a key.
+async function resolveKey(): Promise<string | null> {
+  const fromEnv = process.env.ENCRYPTION_KEY?.trim()
+  if (fromEnv) return fromEnv
+  const file = process.env.ENCRYPTION_KEY_FILE?.trim()
+  if (!file) return null
+  const buf = await readFile(file)
+  const text = buf.toString('utf8').trim()
+  if (/^[0-9a-f]{64}$/i.test(text)) return text
+  if (buf.length === 32) return buf.toString('hex')
+  throw new Error(`key file ${file} is neither 64 hex chars nor 32 raw bytes`)
+}
+
+const key = await resolveKey()
+if (!key) {
+  console.error('no key provided: set ENCRYPTION_KEY (64 hex) or ENCRYPTION_KEY_FILE')
+  console.error('a probe without the real key would use a throwaway one, so the result would be meaningless')
   process.exit(4)
 }
+process.env.ENCRYPTION_KEY = key
 
 const select = { id: true, code: true } as const
 
