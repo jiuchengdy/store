@@ -78,10 +78,14 @@ SQL_A="status='processing' and created_at < now() - interval '${MINUTES} minutes
 SQL_B="status='unpaid' and payment_attempted and payment_url is not null and created_at < now() - interval '${MINUTES} minutes'"
 SQL_C="status='unpaid' and payment_attempted and payment_url is null and created_at < now() - interval '5 minutes'"
 # D 退款时限（内部 SLA：24 小时打款 / 48 小时必须主动回信）。字段与约束见 §7.6。
-SQL_D="refund_status in ('processing','review') and refund_completed_at is null
+# 计时用 refund_requested_at（受理时间），**不是** created_at——后者更早，会提前报警。
+# status='failed' 是 DB 约束的要求；不带它，约束生效前的历史行可能被扫出来变成「永远核销不掉」的单，
+# 所以不合规存量单独警告、不混进 D 的计数。
+SQL_D="refund_status in ('processing','review') and refund_completed_at is null and status='failed'
        and refund_requested_at < now() - interval '24 hours'"
-SQL_D48="refund_status in ('processing','review') and refund_completed_at is null
+SQL_D48="refund_status in ('processing','review') and refund_completed_at is null and status='failed'
        and refund_requested_at < now() - interval '48 hours'"
+SQL_LEGACY="refund_status in ('processing','review') and status <> 'failed'"
 
 echo "== 滞留单巡检（A processing>${MINUTES}min / B unpaid+已点支付+有地址>${MINUTES}min / C unpaid+无地址>5min / D 退款超 24h）=="
 echo "库 ${DB_NAME} / 时间 $(date '+%Y-%m-%d %H:%M %z') / 网关 ${GMPAY_BASE:-(未配置)}"
@@ -172,6 +176,14 @@ if [ "$D" != "0" ]; then
             ' | 备注 ' || coalesce(nullif(trim(refund_resolution_note),''), '(空)')
      from orders where $SQL_D order by refund_requested_at" | sed 's/^/  /'
   echo "  处置：按 §7.6 完成人工打款并回填凭证（币种/数量/链/txid）；超过 48 小时的必须**主动回信**说明原因，不要等买家催"
+fi
+LEGACY=$(count_where "$SQL_LEGACY")
+if [ -n "$LEGACY" ] && [ "$LEGACY" != "0" ]; then
+  echo "  ⚠ 另有 ${LEGACY} 条退款状态与订单状态不一致的**历史存量**（约束生效前写入，D 类不报、也核销不掉）："
+  q "select id || ' | 订单 ' || status || ' | 退款 ' || coalesce(refund_status,'-') || ' | 受理 ' ||
+            coalesce(to_char(refund_requested_at, 'YYYY-MM-DD HH24:MI'), '(空)')
+     from orders where $SQL_LEGACY order by refund_requested_at nulls last" | sed 's/^/    /'
+  echo "    处置：逐个人工确认退款是否已实际完成，再改订单状态或清退款字段（不要批量改，历史对账会断）"
 fi
 
 # ---- 汇总与退出码 ----

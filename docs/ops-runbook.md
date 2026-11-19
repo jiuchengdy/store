@@ -246,7 +246,10 @@ XorPay 查询接口有六种状态：`success` / `payed` 都算已付（前者�
 | A 履约卡 | `processing` 超 N 分钟 | 回调已接收，卡在发货/上游 | 看 Worker 与 `lastError`；20 分钟自愈则记录，否则人工接管（§7.1） |
 | B 疑似付了但没入账 | `unpaid` + `payment_attempted` + `payment_url` 非空，超 N 分钟 | 买家拿到收银台地址后，钱付了但回调没落库 | 脚本自动拿 `paymentId`（= `trade_id`）查 `GET /pay/check-status/{trade_id}` 分流：`2` → 补入账（§7.3，且必须核金额）；`1/3/4` → 买家没付完，忽略；查不到 → 人工核对 |
 | C 建单失败 | `unpaid` + `payment_attempted` + `payment_url` 为空，超 5 分钟 | 点了支付却没拿到地址，买家当场卡住 | 让买家重开收银台（同一 `requestKey` 命中原订单）；大量出现说明渠道不通（§7.4） |
-| D 退款超时 | `refund_status ∈ (processing, review)` 且未完成、受理超 **24 小时**；其中超 **48 小时**单列 | 退款 100% 人工后没人盯就没人打款 | 按 §7.6 完成人工打款并回填凭证；**超 48 小时必须主动回信**，不要等买家催 |
+| D 退款超时 | `refund_status ∈ (processing, review)` + `status='failed'` + 未完成，`refund_requested_at`（**受理时间**，不是 `created_at`）超 **24 小时**；超 **48 小时**单列 | 退款 100% 人工后没人盯就没人打款 | 按 §7.6 完成人工打款并回填凭证；**超 48 小时必须主动回信**，不要等买家催 |
+| （附）历史存量 | `refund_status ∈ (processing,review)` 但 `status <> 'failed'` | 约束生效前写入的坏行，永远核销不掉 | 脚本只警告不计数：逐个人工确认退款是否已实际完成，**不许批量改**（历史对账会断） |
+
+> **D 类告警早于承诺期限是设计如此（宁早不晚）。** SLA 文字是「买家确认链与地址后 24 小时」，而机器只能用受理时间计时，两个时钟不同步。**不许用「买家还没确认地址」解释 D 类命中**——那正好会跳过唯一一次主动回信的机会。
 
 > **D 类（退款超时）里的 `processing` 只匹配历史行**（即「历史/自动退款遗留」状态）：`orders_refund_record_check` 要求 `refund_status='processing'` 必须 `refund_automatic=true`，而自动退款又必须是 `provider='xorpay'`——渠道收敛后人工退款只落 `review`。查询里保留 `processing` 是为了不漏历史单，不代表新单会出现这个状态。
 
