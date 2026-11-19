@@ -6,6 +6,7 @@ import { fulfillOrder } from './fulfillment'
 import { deliverOrderEmail } from './notifications'
 import { releaseExpiredCouponOrders } from './coupons'
 import { claimJob, databaseNow } from './database-sql'
+import { exhaustFulfillment, fulfillmentRetryExhausted } from './fulfillment-exhaustion'
 
 let lastAnalyticsCleanup = 0
 export async function tick() {
@@ -45,12 +46,21 @@ export async function tick() {
   if (!job) return false
   try {
     if (!(await fulfillOrder(job.orderId))) {
+      // Waiting for the buyer (needs_session) is not a delivery attempt: it must
+      // neither burn the retry budget nor be turned into a failure. Reset the
+      // counter and check back slowly instead of every 5 seconds.
+      const waiting = await db.order.findUnique({
+        where: { id: job.orderId },
+        select: { status: true },
+      })
+      const paused = waiting?.status === 'needs_session'
       await db.job.updateMany({
         where: { id: job.id, lease },
         data: {
-          runAt: new Date((await databaseNow()).getTime() + 5000),
+          runAt: new Date((await databaseNow()).getTime() + (paused ? 60_000 : 5000)),
           lockedUntil: null,
           lastError: null,
+          ...(paused ? { attempts: 0 } : {}),
         },
       })
       return true
@@ -61,13 +71,25 @@ export async function tick() {
     })
   } catch (error) {
     const safe = error instanceof UpstreamError ? safeUpstreamError(error) : null
+    const code = safe?.code ?? 'RETRY_PENDING'
+    // Budget is per order, not per attempt type: a permanent upstream error
+    // (deactivated account, delisted product, bad parameters) must eventually
+    // become a human task instead of retrying every 5 minutes forever.
+    const state = await db.order.findUnique({
+      where: { id: job.orderId },
+      select: { status: true },
+    })
+    if (state?.status === 'processing' && fulfillmentRetryExhausted(job.attempts + 1)) {
+      await exhaustFulfillment(job.orderId, code)
+      return true
+    }
     const wait = safe?.retryAfter ?? Math.min(300, 5 * 2 ** Math.min(job.attempts, 6))
     await db.job.updateMany({
       where: { id: job.id, lease },
       data: {
         runAt: new Date((await databaseNow()).getTime() + wait * 1000),
         lockedUntil: null,
-        lastError: safe?.code ?? 'RETRY_PENDING',
+        lastError: code,
       },
     })
   }
