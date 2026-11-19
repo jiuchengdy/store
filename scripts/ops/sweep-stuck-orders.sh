@@ -8,6 +8,10 @@
 #   B 疑似「付了但没入账」：status='unpaid' + payment_attempted + payment_url 非空，超 N 分钟
 #   C 建单失败：status='unpaid' + payment_attempted + payment_url 为空，超 5 分钟
 #
+# 另加一类（不属滞留单，但同一张表留痕，值班人一眼看全）：
+#   D 退款超时：refund_status in (processing,review) 且未完成、受理超 24 小时（内部 SLA）；
+#     其中超 48 小时的必须**主动回信**（runbook §7.6）。退款 100% 人工后，这一步没人盯就没人做。
+#
 # B 类**不靠猜**：拿本地 paymentId（= EPUSDT 的 trade_id）调公开无签名的
 #   GET /pay/check-status/{trade_id}
 # 自动分流：2=已付(需补入账) / 1=未付(买家没付完，忽略) / 3=过期 / 4=占位未选链。
@@ -73,8 +77,13 @@ check_status() {   # $1=trade_id；查不到返回空串
 SQL_A="status='processing' and created_at < now() - interval '${MINUTES} minutes'"
 SQL_B="status='unpaid' and payment_attempted and payment_url is not null and created_at < now() - interval '${MINUTES} minutes'"
 SQL_C="status='unpaid' and payment_attempted and payment_url is null and created_at < now() - interval '5 minutes'"
+# D 退款时限（内部 SLA：24 小时打款 / 48 小时必须主动回信）。字段与约束见 §7.6。
+SQL_D="refund_status in ('processing','review') and refund_completed_at is null
+       and refund_requested_at < now() - interval '24 hours'"
+SQL_D48="refund_status in ('processing','review') and refund_completed_at is null
+       and refund_requested_at < now() - interval '48 hours'"
 
-echo "== 滞留单巡检（A processing>${MINUTES}min / B unpaid+已点支付+有地址>${MINUTES}min / C unpaid+无地址>5min）=="
+echo "== 滞留单巡检（A processing>${MINUTES}min / B unpaid+已点支付+有地址>${MINUTES}min / C unpaid+无地址>5min / D 退款超 24h）=="
 echo "库 ${DB_NAME} / 时间 $(date '+%Y-%m-%d %H:%M %z') / 网关 ${GMPAY_BASE:-(未配置)}"
 
 count_where() { q "select count(*) from orders where $1"; }
@@ -149,13 +158,29 @@ if [ "$C" != "0" ]; then
   echo "  处置：买家当场卡住，让其重开收银台（同一 requestKey 命中原订单）；大量出现说明渠道不通（runbook §7.4）"
 fi
 
-# ---- 汇总与退出码 ----
-ACTION=$((A + C + B_PAID + B_UNKNOWN + B_NOPID))
+# ---- D 退款人工时限（24h 打款 / 48h 必须主动回信）----
+D=$(count_where "$SQL_D")
+[ -z "$D" ] && { echo "无法执行退款时限查询" >&2; exit 2; }
+D48=$(count_where "$SQL_D48")
 echo
-echo "== 汇总：A ${A} / B 需处置 $((B_PAID + B_UNKNOWN + B_NOPID))（B 总 ${B_TOTAL}）/ C ${C} = ${ACTION} 单需处置 =="
+echo "[D 退款超时，24 小时未打款] ${D} 单（其中超 48 小时未主动回信：${D48} 单）"
+if [ "$D" != "0" ]; then
+  q "select id || ' | 退款 ' || coalesce(refund_status,'-') || '/' || coalesce(refund_destination,'-') ||
+            ' | 金额 ' || amount || ' | 受理 ' || to_char(refund_requested_at, 'YYYY-MM-DD HH24:MI') ||
+            ' | 已 ' || floor(extract(epoch from (now() - refund_requested_at)) / 3600)::int || ' 小时' ||
+            ' | 经办 ' || coalesce(refund_actor,'(空)') ||
+            ' | 备注 ' || coalesce(nullif(trim(refund_resolution_note),''), '(空)')
+     from orders where $SQL_D order by refund_requested_at" | sed 's/^/  /'
+  echo "  处置：按 §7.6 完成人工打款并回填凭证（币种/数量/链/txid）；超过 48 小时的必须**主动回信**说明原因，不要等买家催"
+fi
+
+# ---- 汇总与退出码 ----
+ACTION=$((A + C + B_PAID + B_UNKNOWN + B_NOPID + D))
+echo
+echo "== 汇总：A ${A} / B 需处置 $((B_PAID + B_UNKNOWN + B_NOPID))（B 总 ${B_TOTAL}）/ C ${C} / D 退款超时 ${D}（含超 48h ${D48}）= ${ACTION} 单需处置 =="
 
 if [ "$IGNORE_UNPAID" = "1" ]; then
-  ACTION=$((A + C))
+  ACTION=$((A + C + D))
   echo "（UNPAID_IGNORED：--ignore-unpaid 生效，B 类不计入退出码）"
 fi
 
