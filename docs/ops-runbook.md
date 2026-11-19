@@ -95,6 +95,8 @@ RETENTION_DAYS=7 REMOTE=ops@192.168.0.1:/srv/store-backups \
 
 `DB_CONTAINER` 默认是 `store-postgres-1`（生产 compose 服务名）。**本地开发库要显式传 `DB_CONTAINER=store-db-1`**，否则脚本直接以 `container ... is not running` 退出——不是脚本坏了，是容器名不同。
 
+`BACKUP_DIR` 必须是**真实目录，不能是软链**：软链会让 `chmod 700` 悄悄作用在目标路径上（可能是共享的可读目录），脚本会直接拒跑。
+
 crontab：
 
 ```cron

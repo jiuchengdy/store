@@ -45,6 +45,11 @@ docker inspect -f '{{.State.Running}}' "$DB_CONTAINER" 2>/dev/null | grep -q tru
   || fail "container $DB_CONTAINER is not running"
 
 mkdir -p "$BACKUP_DIR"
+# A symlinked backup dir silently retargets the chmod below (and can point at a
+# shared, world-readable location). Refuse rather than secure the wrong path.
+if [ -L "$BACKUP_DIR" ]; then
+  fail "BACKUP_DIR ${BACKUP_DIR} is a symlink: use a real directory so permissions apply where you think they do"
+fi
 chmod 700 "$BACKUP_DIR"
 STAMP="$(date -u '+%Y%m%dT%H%M%SZ')"
 NAME="${PGDATABASE}-${STAMP}.dump"
