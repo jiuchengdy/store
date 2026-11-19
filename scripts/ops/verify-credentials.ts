@@ -17,7 +17,9 @@
 //   bun scripts/ops/verify-credentials.ts
 //   PROBE_ROWS=5 bun scripts/ops/verify-credentials.ts   # oldest, newest, plus 3 more
 //
-// Exit codes:
+// Exit codes (INTERNAL — consumed only by scripts/ops/restore-drill.sh, which
+// translates them into its own codes. Never wire this script straight into CI:
+// its 3 means "no rows to probe", while other tools use 3 for other things.)
 //   0 all probed credentials decrypted
 //   1 key mismatch: ENCRYPTION_KEY cannot open ciphertext that is in this backup
 //   3 nothing to probe (no inventory rows — cannot prove anything)
