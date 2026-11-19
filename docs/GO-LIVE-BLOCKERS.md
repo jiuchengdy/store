@@ -9,7 +9,7 @@
    - `GET /pay/check-status/x`：Epusdt 回 200/`status_code:10008`，gmpay-edge 回 404；
    - `GET /payments/gmpay/v1/order/query`：Epusdt 404，edge 401（缺签名）。
    判定后：**Epusdt** 改 URL + 重写响应结构（只回 `{trade_id,status}`，现代码期望的 currency/amount/order_id 全无）；**edge** 维持现状。
-   证据（@u5c0f-i 核实 + @u5c0f-q 复读代码确认）：`confirmGmpayReceipt` 请求 `order/query`（`payments.ts:236`），挂在主回调路径（`route.ts:43`），接 Epusdt 时每笔回调 404 → `ApiError(503)` → 厂商重试耗尽 → **GMPay 全部收入进不了账**。mock 测不出这个 404，沙箱真发一笔。
+   证据（@u5c0f-i 核实 + @u5c0f-q 复读代码确认）：`confirmGmpayReceipt` 请求 `order/query`（`payments.ts:236`），挂在主回调路径（`route.ts:43`），接 Epusdt 时每笔回调 404 → `ApiError(503)` → 厂商重试耗尽 → **GMPay 全部收入进不了账**。mock 测不出这个 404。~~沙箱真发一笔~~ → **2026-11-19 用户拍板：上线前不做支付通道真实联调**（见 §五），本条改为「mock 覆盖 + 上线后首笔真实支付触发」；首周人工盯单兜底。
    - **P0-A 下单 100% 失败**：`services.ts:344` 生成 `o_`+32hex = **34 字符**，超网关 `maxLen:32` → `400/10009`；同参数 32 字符 → `200`。现有测试夹具用 `orderId:'tx'`（2 字符），正好绕过长度限制，所以一直绿。修法：`o_`+30 位 = 32 字符，确定性幂等不变，与历史 34 字符订单并存无需迁移。
    - **P0-B 查单路由不存在**：`/payments/gmpay/v1/order/query` **GET/POST 均 404**（v2.0.0 `router.go` 只注册 `create-transaction` 与 `config`）；真路由 `GET /pay/check-status/{trade_id}` 只回 `{trade_id,status}`，现有四重比对（currency/order_id/amount）必挂 → 判据改为 `status==2`，金额交叉核用 `GET /pay/checkout-counter-resp/{trade_id}`。
    - **10002 不可自动恢复（措辞已更正）**：网关按 `order_id` 全局查重（`order_service.go:139-145`）。**商户 API** 没有按 order_id 反查 trade_id 的接口；**网关管理端有**（`GET /admin/api/v1/orders?keyword=` 同时按 order_id/trade_id 搜，另有 `resend-callback`/`mark-paid`，未带凭据实测 `401` 非 `404`）。所以结论是「商户侧无自动恢复，恢复走管理端人工，admin 凭据不进应用」，不是「支付地址永久丢」。修法：建单超时不盲目重建、`paymentId` 先落库、10002 单独处置文案。
@@ -41,7 +41,12 @@
 ## 二、上线前门槛（P1，不阻塞代码，但缺了不能上线）
 
 7. **e2e 进 CI + 报数铁律** — @u5c0f-q。铁律：报测试数必须同时贴 `N passed / N skipped`。
-8. **验签固定向量测试 + 三家沙箱真发一次** — @u5c0f-q。XorPay 两组向量已三方交叉验证一致（可直接写固定向量）。GMPay 回调要真发一笔（mock 测不出 404）。
+8. ~~**验签固定向量测试 + 三家沙箱真发一次**~~ → **已评估不做（用户 2026-11-19 拍板，见 §五），首周人工盯单兜底。**
+   - 保留的部分：**验签固定向量**照写（纯本地、零风险、可回归）；XorPay 两组向量已三方交叉验证一致。
+   - 不做/已免除：三家渠道沙箱或生产真发一笔、GMPay 真回调联调、XorPay 真下单退款联调。**上线前一律不做。**
+   - 残余风险（不因不测而消失）：真渠道从未生产联调；XorPay 无主动查单（P0#1 仍在实现）；GMPay 回调窗口 6.5 小时。
+   - 兜底：上线首周**每 30 分钟扫一遍 `processing` 超 30 分钟的订单**（`docs/ops-runbook.md` 已有此节，标为强制执行；@u5c0f-o 维护）。
+   - 重新捡起条件：**第一笔真实支付出现任何异常**（到账延迟／回调失败／状态卡住）→ 立即做小额全链路测试，不等第二笔。
 9. **support-playbook.md** — @u5c0f-d 已交（`598acdd`/`de989ff`/`052361d`）：按渠道退款表、加密货币问答（**第一句先问"看到收款地址了吗"，没看到=占位单没转过钱，不需哈希**）、未实现能力账本、第 4 节"不要随手改订单状态"（改状态会发信）。
 10. **CHANGELOG + 文档修正** — @u5c0f-d 已交（`598acdd`）。
 11. **代理商自托管前的品牌清理（P1，不阻塞 getcodex.plus 上线，阻塞"代理商自托管"能力）** — 品牌名 `GetCodex Plus` 写死在代码 **27 处/14 文件**（@u5c0f-d 复核；@u5c0f-r 原报 14 处漏了页头 `Site.tsx:33`、`seo.ts` 标题模板、页脚版权等最显眼处），多在买家可见（页头、`<title>`、JSON-LD、邮件主题、验证码主题、GA page_title）。代理商不改代码上线=顶着本仓库品牌卖货。已写 `docs/DEPLOYER-SETTINGS.md`（行号 + 改前改后 grep 归零）。**正确方向**：加 `settings.brandName`（后台可配）让 27 处读它，清单缩成"已知写死点"——列 backlog。改品牌不影响已注册 passkey（issuer/appName/rpName 只是显示名，校验依据 rpID/baseURL）。
@@ -75,4 +80,5 @@
 - **排期（改表类 P0）**：P0#3（最小迁移账本）→ P0#4（job 上限 + 两封信）→ P0#1 → P0#2；P0#5 已完成只等 REMOTE+加密。一个 Codex 轮次别同时改触发器 + 契约 + 业务逻辑。
 - **「原路退款」→「退回原支付方式」统一口径**（@u5c0f-d 定）：GMPay 厂商**没有退款接口**，「原路退」是技术上做不到的承诺，必须从对外话术删掉（`src` 现 16 处「原路」、9 处买家/客服可见，待 @u5c0f-r 按 `refund-copy-fix.md` 改，grep `原路` 归零）；`services.ts`/`refunds.ts` 内部审计措辞不改（保持历史对账一致）。
 - **验收元规矩（团队确立）**：每条断言必须写「验什么对象、什么形态、失败长什么样」三段，缺一段不算判据——本轮六次踩同一坑（空壳 dump、只抽最新、`.env` 备份不到钥匙、`.data` 容器不合法、0644 钥匙、宿主机读容器挂载），根因都是「检查对象 ≠ 生效对象」。
+- **支付通道真实联调：上线前不做（2026-11-19 用户拍板）**。不做：三家渠道沙箱/生产真发一笔、GMPay 真回调联调、XorPay 真下单退款联调。做：验签固定向量（本地）、mock 覆盖、代码静态核对。残余风险（真渠道从未联调／XorPay 无主动查单／GMPay 回调 6.5 小时窗口）接受并记录。兜底：**首周每 30 分钟扫 `processing` 超 30 分钟订单（强制执行）**。重新捡起：**第一笔真实支付任何异常 → 立即小额全链路测试，不等第二笔**。
 - 下一步：GMPay 外部资源已闭环（域名/钱包/密钥全部到位），**只剩代码修复**——P0#0 三处实测缺陷（订单号 34>32、`order/query` 404、10002 不可恢复）+ 10041 进 preflight；任务单由 @u5c0f-r 写、@u5c0f-q 验，写好后可直接扔给 Codex。**在修好并实测通过前，后台 `gmpay` 集成保持 disabled。**
