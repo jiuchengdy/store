@@ -22,7 +22,8 @@
 #   DRILL_NETWORK     docker network for APP_IMAGE mode       (default: store_backend)
 #   DRILL_TOLERANCE   allowed row-count difference, for shops with constant writes (default: 0)
 #
-# Exit codes: 0 drill passed, 1 drill failed, 3 no dump found, 4 no counts sidecar.
+# Exit codes: 0 drill passed, 1 drill failed, 3 no dump found, 4 no counts sidecar,
+#             5 restored but no inventory rows to prove the key against.
 set -eu
 
 DB_CONTAINER="${DB_CONTAINER:-store-postgres-1}"
@@ -104,4 +105,27 @@ done < "$COUNTS_FILE"
 
 [ -z "$MISMATCH" ] || fail "row counts differ beyond tolerance ${DRILL_TOLERANCE}:${MISMATCH}"
 
-log "PASS $(basename "$DUMP_PATH") restored, structure verified, row counts match"
+# Third check: can the credentials actually be opened? Structure + row counts both
+# pass on a backup whose ENCRYPTION_KEY no longer matches — every inventory code
+# would be scrap while the drill printed PASS.
+log "probing credentials with ENCRYPTION_KEY from this environment"
+PROBE_STATUS=0
+if [ -n "${APP_IMAGE:-}" ]; then
+  docker run --rm --network "${DRILL_NETWORK:-store_backend}" \
+    -e DATABASE_URL="$DRILL_URL" -e ENCRYPTION_KEY="${ENCRYPTION_KEY:-}" -e PROBE_ROWS="${PROBE_ROWS:-1}" \
+    -e APP_MODE=demo -e APP_URL=http://localhost \
+    "$APP_IMAGE" sh -c 'bun scripts/ops/verify-credentials.ts' || PROBE_STATUS=$?
+else
+  DATABASE_URL="$DRILL_URL" ENCRYPTION_KEY="${ENCRYPTION_KEY:-}" PROBE_ROWS="${PROBE_ROWS:-1}" \
+    bun scripts/ops/verify-credentials.ts || PROBE_STATUS=$?
+fi
+
+case "$PROBE_STATUS" in
+  0) ;;
+  3) log "credentials unproven: no inventory rows in this backup — nothing was decrypted"
+     log "RESULT=UNPROVEN $(basename "$DUMP_PATH") restored and counted, but the key was never exercised"
+     exit 5 ;;
+  *) fail "credential probe failed (status ${PROBE_STATUS}): ENCRYPTION_KEY cannot open this backup" ;;
+esac
+
+log "PASS $(basename "$DUMP_PATH") restored, structure verified, row counts match, credentials decrypt"

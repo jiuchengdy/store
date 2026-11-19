@@ -129,15 +129,30 @@ crontab：
 
 ```sh
 17 3 * * 0 cd /srv/store && DB_CONTAINER=store-postgres-1 \
+ENCRYPTION_KEY="$(cat /root/.store/encryption.key)" \
 DRILL_BASE_URL="postgresql://getgpt:<pw>@127.0.0.1:5432/__DB__" \
   sh scripts/ops/restore-drill.sh >> /var/log/getcodex-drill.log 2>&1
 ```
 
-它做三件事，**三件全绿才算备份有效**：新建临时库 → `pg_restore --exit-on-error` → 跑 `db:verify` 比对结构 → **按 `.counts` 逐表比对行数** → 删掉临时库。没有 `.counts` 就直接以 `4` 退出：只证明结构回来、不证明数据在，不算通过。
+它做四件事，**四件全绿才算备份有效**：新建临时库 → `pg_restore --exit-on-error` → 跑 `db:verify` 比对结构 → **按 `.counts` 逐表比对行数** → **随机取 1 条 `inventory` 调 `openCredential` 真解密一次** → 删掉临时库。
 
-两种失败路径都实测过，门禁不会无条件变绿：
+第四件是最容易被忽略、后果最重的一件：卡密是 `sealCredential()` 用 `ENCRYPTION_KEY` 做的 AES-256-GCM 加密，**密钥丢了或换过，结构、行数、`db:verify` 全部照样绿**，而库里的货 100% 打不开——「备份成功、货全报废」。所以：
+
+- 解密成功 → `PASS`
+- 解密失败 / 没给密钥 → `FAILED`（退出码 1）
+- 库里没有 `inventory` 行可验 → **`RESULT=UNPROVEN`（退出码 5）**，不是通过：还没进过货的站才会看到这个，一旦有库存必须变成 `PASS`
+- 没有 `.counts` → 退出码 4
+
+演练用的 `ENCRYPTION_KEY` 必须**临时注入**，不要写进脚本或 cron 行里的明文。
+
+三种失败路径都实测过，门禁不会无条件变绿：
 
 ```
+# 密钥换过（结构、行数全对，只有密钥不对）
+credential probe: ok=0 fail=1 probed=1
+  undecryptable inv_crypt_test: Unsupported state or unable to authenticate data
+drill: FAILED: credential probe failed (status 1)                 → 退出码 1
+
 # 空壳 dump（--schema-only，数据全丢，结构完好）
 drill: MISMATCH users expected=3 restored=0
 drill: FAILED: row counts differ beyond tolerance 0: users        → 退出码 1
@@ -203,6 +218,7 @@ XorPay 查询接口有六种状态：`success` / `payed` 都算已付（前者�
 ## 9. 已知缺口（不在本手册范围内，需代码改动）
 
 - 无 migration 工具与版本账本（第 4 节是权宜之计）。
+- **没有 `ENCRYPTION_KEY` 轮换工具**：一旦怀疑泄露，换钥匙 = 历史卡密与历史买家凭据全部解不开，只能「不换」。上线时密钥是全新生成的，所以这是 backlog；但要知道它现在的形态是「要么不换，要么全废」。
 - 备份**未加密**：当前只靠 `0600` 与目录 `0700` 控制，异地机器是多 agent 共用。建议上线前加 age/gpg，私钥只留在恢复方。
 - Worker / sweeper 无业务心跳实现。
 - 出货 job 无最大尝试次数。
