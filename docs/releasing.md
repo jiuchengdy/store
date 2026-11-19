@@ -23,7 +23,7 @@ GitHub About 建议使用：
 ## 首次公开前
 
 - [ ] 确认仓库 `getcodex-plus/store` 可访问，源码、锁文件、依赖补丁、数据库更新和文档均已提交。
-- [ ] 若按开源项目发布，由权利人选择并添加 `LICENSE`，同步 `package.json` 的 `license` 字段和 README。当前未声明许可证，不应宣传为已获得开源授权。
+- [ ] 确认发布包包含 [Apache License 2.0 全文](../LICENSE)，且 `package.json` 的 `license` 字段为 `Apache-2.0`。
 - [ ] 启用 GitHub Actions，允许工作流创建 Release、推送 GHCR 包。默认分支需包含工作流，才能手动运行 Release。
 - [ ] 在仓库 Security 设置中启用私密漏洞报告，使 [安全说明](../SECURITY.md) 中的报告入口可用。
 - [ ] 确认 Git 未跟踪真实 `.env`、数据库备份、初始密码、卡密、客户 Session、日志或测试证据。

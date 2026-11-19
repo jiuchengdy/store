@@ -1,8 +1,9 @@
 {
-  "name": "getcodex-plus",
+  "name": "getcodex-plus-store",
   "description": "Self-hosted ChatGPT recharge storefront with Dujiao-Next procurement, AICDK fulfillment, payments and referrals.",
   "private": true,
-  "version": "0.1.0",
+  "license": "Apache-2.0",
+  "version": "0.1.1",
   "homepage": "https://github.com/getcodex-plus/store#readme",
   "repository": {
     "type": "git",

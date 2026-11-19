@@ -94,4 +94,6 @@ bun run worker
 
 历史验收见 [功能验收记录](docs/release-acceptance.md) 和 [数据库部署验收](docs/postgres-deployment-acceptance.md)，结果仅适用于各记录注明的日期、版本与范围。当前版本以重新运行的检查和目标环境联调为准。
 
-仓库目前尚未声明开源许可证；公开源码不等于授予使用、修改或再分发许可。正式以开源项目发布前需补充许可证。
+## 许可证
+
+本项目采用 [Apache License 2.0](LICENSE)。
