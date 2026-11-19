@@ -1,23 +1,31 @@
 #!/usr/bin/env bash
 # 滞留单巡检：上线首周强制执行，每 30 分钟一次（用户拍板「不做支付通道联调」的兜底）。
 #
-# 为什么扫三类：它们对应三种完全不同的故障形态。只扫 processing 会**漏掉最该抓的那类**——
-# GMPay 回调 503（P0-B）时订单永远停在 unpaid，本地没有任何「处理中」痕迹，扫 processing 一笔都看不到。
+# 为什么扫三类：GMPay 回调被拒时订单**永远停在 unpaid**（services.ts:683 建单 unpaid、
+# :765 点支付只置 payment_attempted、:824 回调被接受才 processing），只扫 processing
+# 会显示 RESULT: OK 而把每一笔漏掉。
 #   A 履约卡：status='processing' 超 N 分钟（回调已接收，卡在发货/上游）
 #   B 疑似「付了但没入账」：status='unpaid' + payment_attempted + payment_url 非空，超 N 分钟
-#     注意：B 里**混着正常放弃支付的买家**（拿到收银台地址但没付），所以必须到网关核对后定性
 #   C 建单失败：status='unpaid' + payment_attempted + payment_url 为空，超 5 分钟
-#     买家点了支付却没拿到收银台地址，当场卡住
+#
+# B 类**不靠猜**：拿本地 paymentId（= EPUSDT 的 trade_id）调公开无签名的
+#   GET /pay/check-status/{trade_id}
+# 自动分流：2=已付(需补入账) / 1=未付(买家没付完，忽略) / 3=过期 / 4=占位未选链。
+# 只有 paymentId 为空（建单响应丢失 / 10002 场景）才进人工队列。
 #
 # 用法：
 #   scripts/ops/sweep-stuck-orders.sh [--db-container <名>] [--psql-user <名>] [--db <库>]
 #                                     [--minutes <N>] [--ignore-unpaid]
-#   默认 --minutes 30。--ignore-unpaid：B 类只打印、不计入退出码（稳定期用；首周别用）。
+#   默认 --minutes 30。
+#   --ignore-unpaid：B 类只打印、不计入退出码。**有护栏**：P0#6（check-status）没进本仓库源码时
+#   直接 rc=2 拒绝——否则等于把唯一能抓「crypto 全挂」的那类关掉，还显示一片祥和。
+#
+# 环境变量：GMPAY_BASE_URL 覆盖网关地址（默认取 DB 里 gmpay 集成的 url）。
 #
 # 退出码（见 docs/ops/exit-codes.md，0/1 全团队共用）：
-#   0 = 三类都没有滞留单（或只剩被 --ignore-unpaid 排除的 B）
-#   1 = 有滞留单，需要人工接管/核对（逐单打印，可直接贴进工单）
-#   2 = 无法检查（连不上库、库缺 orders 表、参数非法）
+#   0 = 无需处置的单
+#   1 = 有单需处置/核对（逐单打印，可直接贴进工单）
+#   2 = 无法检查（连不上库、缺 orders 表、参数非法、护栏拒绝）
 set -u
 DB_CONTAINER="${DB_CONTAINER:-store-db-1}"
 DB_USER="${DB_USER:-getgpt}"
@@ -36,6 +44,16 @@ while [ $# -gt 0 ]; do
 done
 case "$MINUTES" in ''|*[!0-9]*) echo "--minutes 必须是整数" >&2; exit 2 ;; esac
 
+# 护栏：P0#6 未进源码时不许开 --ignore-unpaid。判断依据是本仓库 payments.ts 里已有 check-status
+# （镜像由同一提交构建）；以仓库为准，不去猜运行中容器的内容。
+if [ "$IGNORE_UNPAID" = "1" ]; then
+  if ! grep -q 'check-status' src/server/integrations/payments.ts 2>/dev/null; then
+    echo "--ignore-unpaid 被拒绝：P0#6（GMPay check-status）尚未进入本仓库源码。" >&2
+    echo "  此时 B 类是唯一能发现「钱付了但没入账」的一类，忽略它等于把兜底关掉。" >&2
+    exit 2
+  fi
+fi
+
 q() { docker exec "$DB_CONTAINER" psql -U "$DB_USER" -d "$DB_NAME" -tAc "$1" 2>/dev/null; }
 
 if [ -z "$(q 'select 1')" ]; then
@@ -43,62 +61,106 @@ if [ -z "$(q 'select 1')" ]; then
   exit 2
 fi
 
+GMPAY_BASE="${GMPAY_BASE_URL:-$(q "select coalesce(public->>'url','') from integrations where provider='gmpay' limit 1")}"
+GMPAY_BASE="${GMPAY_BASE%/}"
+
+check_status() {   # $1=trade_id；查不到返回空串
+  [ -z "$GMPAY_BASE" ] && { echo ""; return; }
+  curl -s --max-time 8 "${GMPAY_BASE}/pay/check-status/$1" 2>/dev/null \
+    | sed -n 's/.*"status"[[:space:]]*:[[:space:]]*\([0-9][0-9]*\).*/\1/p' | head -1
+}
+
 SQL_A="status='processing' and created_at < now() - interval '${MINUTES} minutes'"
 SQL_B="status='unpaid' and payment_attempted and payment_url is not null and created_at < now() - interval '${MINUTES} minutes'"
 SQL_C="status='unpaid' and payment_attempted and payment_url is null and created_at < now() - interval '5 minutes'"
 
 echo "== 滞留单巡检（A processing>${MINUTES}min / B unpaid+已点支付+有地址>${MINUTES}min / C unpaid+无地址>5min）=="
-echo "库 ${DB_NAME} / 时间 $(date '+%Y-%m-%d %H:%M %z')"
+echo "库 ${DB_NAME} / 时间 $(date '+%Y-%m-%d %H:%M %z') / 网关 ${GMPAY_BASE:-(未配置)}"
 
-report() {
-  # $1=标签 $2=WHERE 子句 $3=处置提示；计数通过全局变量返回
-  local cnt rows
-  cnt=$(q "select count(*) from orders where $2")
-  if [ -z "$cnt" ]; then
-    echo "无法执行巡检查询（库 ${DB_NAME} 可能缺 orders 表）" >&2
-    exit 2
-  fi
-  echo
-  echo "[$1] ${cnt} 单"
-  if [ "$cnt" != "0" ]; then
-    rows=$(q "select id || ' | ' || status || ' | ' || channel || ' | 金额 ' || amount ||
-                 ' | 创建 ' || to_char(created_at, 'YYYY-MM-DD HH24:MI') || ' | 已滞留 ' ||
-                 floor(extract(epoch from (now() - created_at)) / 60)::int || ' 分钟 | payment_id ' ||
-                 coalesce(payment_id, '(空)') || ' | 履约 ' || coalesce(fulfillment_status, '(空)')
-              from orders where $2 order by created_at")
-    printf '%s\n' "$rows" | sed 's/^/  /'
-    echo "  处置：$3"
-  fi
-  LAST_COUNT="$cnt"
+count_where() { q "select count(*) from orders where $1"; }
+list_where() {
+  q "select id || ' | ' || status || ' | ' || channel || ' | 金额 ' || amount || ' | 创建 ' ||
+            to_char(created_at, 'YYYY-MM-DD HH24:MI') || ' | 已滞留 ' ||
+            floor(extract(epoch from (now() - created_at)) / 60)::int || ' 分钟 | payment_id ' ||
+            coalesce(payment_id, '(空)')
+     from orders where $1 order by created_at"
 }
 
-report "A 履约卡" "$SQL_A" \
-  "先看 Worker 存活与 ops_heartbeat，再看 job 的 lastError；20 分钟内自愈则记录，否则人工接管、2 小时内答复买家（runbook §7.1）"
-A="$LAST_COUNT"
-report "B 疑似付了但没入账（含放弃支付的正常单）" "$SQL_B" \
-  "不要凭本地状态补单。逐个到网关管理端按 order_id 查真实状态（trade_id / status=2），确认已付再按 runbook §7.3 补入账，且必须同时校验金额"
-B="$LAST_COUNT"
-report "C 建单失败（点了支付没拿到收银台地址）" "$SQL_C" \
-  "买家当场卡住：让其重开收银台（同一 requestKey 命中原订单）；同类大量出现说明支付渠道不通，按 runbook §7.4 查"
-CC="$LAST_COUNT"
+A=$(count_where "$SQL_A")
+[ -z "$A" ] && { echo "无法执行巡检查询（库 ${DB_NAME} 可能缺 orders 表）" >&2; exit 2; }
+C=$(count_where "$SQL_C")
+[ -z "$C" ] && { echo "无法执行巡检查询" >&2; exit 2; }
 
-TOTAL=$((A + B + CC))
 echo
-echo "== 汇总：A ${A} / B ${B} / C ${CC} = ${TOTAL} 单 =="
-
-if [ "$TOTAL" = "0" ]; then
-  echo "RESULT: OK — 三类均无滞留单（exit 0）"
-  exit 0
+echo "[A 履约卡] ${A} 单"
+if [ "$A" != "0" ]; then
+  list_where "$SQL_A" | sed 's/^/  /'
+  echo "  处置：先看 Worker 存活与 ops_heartbeat，再看 job 的 lastError；20 分钟内自愈则记录，否则人工接管（runbook §7.1）"
 fi
+
+# ---- B 类：逐单查网关状态自动分流 ----
+B_PAID=0; B_UNPAID=0; B_EXPIRED=0; B_PLACEHOLDER=0; B_UNKNOWN=0; B_NOPID=0
+B_DETAIL_PAID=""; B_DETAIL_UNKNOWN=""; B_DETAIL_NOPID=""
+B_ROWS=$(q "select id || '|' || coalesce(payment_id,'') from orders where $SQL_B order by created_at")
+B_TOTAL=0
+if [ -n "$B_ROWS" ]; then
+  while IFS='|' read -r OID PID; do
+    [ -z "$OID" ] && continue
+    B_TOTAL=$((B_TOTAL + 1))
+    if [ -z "$PID" ]; then
+      B_NOPID=$((B_NOPID + 1))
+      B_DETAIL_NOPID="${B_DETAIL_NOPID}  ${OID}（payment_id 为空，建单响应丢失）"$'\n'
+      continue
+    fi
+    case "$(check_status "$PID")" in
+      2) B_PAID=$((B_PAID + 1)); B_DETAIL_PAID="${B_DETAIL_PAID}  ${OID}（trade_id ${PID}）：网关 status=2 已付，需补入账"$'\n' ;;
+      1) B_UNPAID=$((B_UNPAID + 1)) ;;
+      3) B_EXPIRED=$((B_EXPIRED + 1)) ;;
+      4) B_PLACEHOLDER=$((B_PLACEHOLDER + 1)) ;;
+      *) B_UNKNOWN=$((B_UNKNOWN + 1)); B_DETAIL_UNKNOWN="${B_DETAIL_UNKNOWN}  ${OID}（trade_id ${PID}）：网关无有效响应，需人工核对"$'\n' ;;
+    esac
+  done <<EOF
+$B_ROWS
+EOF
+fi
+
+echo
+echo "[B 疑似付了但没入账] ${B_TOTAL} 单（网关分流：已付 ${B_PAID} / 未付 ${B_UNPAID} / 过期 ${B_EXPIRED} / 占位未选链 ${B_PLACEHOLDER} / 未核实 ${B_UNKNOWN} / 无 trade_id ${B_NOPID}）"
+if [ "$B_PAID" != "0" ]; then
+  printf '%s' "$B_DETAIL_PAID" | sed 's/^/  /'
+  echo "  处置：status=2 已付但本地未入账 → 按 runbook §7.3 补入账，必须先核金额"
+fi
+if [ "$B_UNKNOWN" != "0" ]; then
+  printf '%s' "$B_DETAIL_UNKNOWN" | sed 's/^/  /'
+  echo "  处置：查不到 → 先重试一次（可能是本机到网关的网络问题），仍查不到再人工核对"
+fi
+if [ "$B_NOPID" != "0" ]; then
+  printf '%s' "$B_DETAIL_NOPID" | sed 's/^/  /'
+  echo "  处置：payment_id 为空只能走网关管理端按 order_id 反查（admin 凭据不进应用/脚本，由所有者操作）"
+fi
+if [ "$B_UNPAID" != "0" ] || [ "$B_EXPIRED" != "0" ] || [ "$B_PLACEHOLDER" != "0" ]; then
+  echo "  （未付/过期/占位 = 买家没付完，正常，不计入告警）"
+fi
+
+echo
+echo "[C 建单失败] ${C} 单"
+if [ "$C" != "0" ]; then
+  list_where "$SQL_C" | sed 's/^/  /'
+  echo "  处置：买家当场卡住，让其重开收银台（同一 requestKey 命中原订单）；大量出现说明渠道不通（runbook §7.4）"
+fi
+
+# ---- 汇总与退出码 ----
+ACTION=$((A + C + B_PAID + B_UNKNOWN + B_NOPID))
+echo
+echo "== 汇总：A ${A} / B 需处置 $((B_PAID + B_UNKNOWN + B_NOPID))（B 总 ${B_TOTAL}）/ C ${C} = ${ACTION} 单需处置 =="
 
 if [ "$IGNORE_UNPAID" = "1" ]; then
-  ACTION=$((A + CC))
-  echo "（--ignore-unpaid：B 类 B=${B} 只打印，不计入退出码）"
-else
-  ACTION=$TOTAL
+  ACTION=$((A + C))
+  echo "（UNPAID_IGNORED：--ignore-unpaid 生效，B 类不计入退出码）"
 fi
+
 if [ "$ACTION" = "0" ]; then
-  echo "RESULT: OBSERVE — 只有 B 类待核对，未计入退出码（exit 0）"
+  echo "RESULT: OK — 无需要处置的滞留单（exit 0）"
   exit 0
 fi
 echo "RESULT: ACTION REQUIRED — ${ACTION} 单需处置（exit 1）"
