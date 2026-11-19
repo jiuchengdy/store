@@ -43,7 +43,7 @@ skip() { printf '  SKIP  %s\n' "$1"; }
 
 # 0. 库能连上吗
 if ! q "select 1" >/dev/null || [ -z "$(q 'select 1')" ]; then
-  echo "无法连接数据库容器 $DB_CONTAINER（库 $DB_NAME，用户 $DB_USER）。"
+  echo "无法连接数据库容器 ${DB_CONTAINER}（库 ${DB_NAME}，用户 ${DB_USER}）。"
   echo "本地开发常见原因：容器名不是 store-postgres-1；或库没起。"
   exit 2
 fi
