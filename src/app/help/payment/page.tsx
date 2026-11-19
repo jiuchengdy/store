@@ -2,13 +2,15 @@ import Link from 'next/link'
 import { pageMetadata } from '../../../seo'
 import { refundSummary } from '../../../product-copy'
 import { Support } from '../../../components/Support'
+import { publicSupport } from '../../../server/public-support'
 
 export const metadata = pageMetadata(
   'ChatGPT 充值未到账怎么办｜付款、查单与退款',
   '付款成功但 ChatGPT 尚未到账、订单需要更新账号信息、游客如何查单，以及原路退款和钱包退款说明。',
   '/help/payment',
 )
-export default function PaymentHelp() {
+export default async function PaymentHelp() {
+  const support = await publicSupport()
   return (
     <main className="container prose-page">
       <h1>ChatGPT 充值未到账：付款、查单与退款说明</h1>
@@ -40,6 +42,29 @@ export default function PaymentHelp() {
       <p>
         尚未发起渠道支付的订单可在订单页申请取消，已抵扣余额会退回钱包。已发起支付或付款结果尚未确认时，需要先核对状态，不能直接取消。
       </p>
+      {support.cryptoEnabled && (
+        <>
+          <h2>用加密货币（USDT 等）付款</h2>
+          <p>
+            加密货币由第三方网关收款，收银台会让您自行选择链和币种。选择后才会生成收款地址；
+            如果只看到「待付款」而没有地址，说明还没有选链，此时并未产生任何付款。
+          </p>
+          <p>
+            转账金额以链上实际到账数量为准。到账后订单状态才会更新，链上确认时间可能从几分钟到几十分钟不等。
+            如长时间未更新，请提供交易哈希（txid），我们据此核对。
+          </p>
+          <h2>加密货币订单的退款</h2>
+          <p>
+            网关不提供自动退款，退款由我们通过钱包人工转回您付款时使用的<strong>同一条链、同一个地址</strong>。
+            退回数量按您<strong>实际到账的数量原数退回</strong>，
+            <strong>不按人民币金额折算，汇率波动不影响退回数量</strong>。
+          </p>
+          <p>
+            申请退款时请回信确认链与收款地址；打款完成后我们会提供交易哈希供您在链上核对。
+            请注意：地址或链填错会造成无法找回的损失。
+          </p>
+        </>
+      )}
       <h2>联系客服时需要提供什么？</h2>
       <p>
         提供订单号、当前状态和问题描述即可。请勿在邮件或聊天中发送密码、验证码及完整会话信息；截图请遮挡这些内容。
