@@ -5,8 +5,15 @@
 # （支持邮箱空着、ENCRYPTION_KEY 没设、GMPay 两个实现、品牌写死）会随部署数
 # 复制 N 份——不收敛就会变成 N 份人工排查。
 #
-# 用法：scripts/ops/deployer-preflight.sh [--db-container <名>] [--psql-user <名>] [--db <库名>]
-# 退出码：0=全部通过（或仅 WARN）  1=有 FAIL  2=连不上库，无法体检
+# 用法：scripts/ops/deployer-preflight.sh [--db-container <名>] [--psql-user <名>] [--db <库名>] [--deploy bare|container|auto]
+#
+# 退出码（团队统一登记表，改动前先看 docs/ops/exit-codes.md）：
+#   0 = OK        全部通过（可能有 WARN）
+#   1 = FAILED    存在必须修复项
+#   2 = 无法体检  连不上库
+#   6 = UNVERIFIED 无 FAIL，但有判据在当前视角下验不了（**不是通过**）
+# 注意 6 不是随手挑的：drill 已占用 3(无 dump) / 4(缺 .counts) / 5(UNPROVEN)，
+# 而 drill 与 preflight 都会被 CI 调用，所以 preflight 必须避开这几个数字。
 set -u
 DB_CONTAINER="${DB_CONTAINER:-store-db-1}"
 DB_USER="${DB_USER:-getgpt}"
@@ -138,6 +145,6 @@ if [ "$FAIL" -ne 0 ]; then echo "RESULT: FAILED — 存在必须修复项，不�
 if [ "$UNVERIFIED" -ne 0 ]; then
   echo "RESULT: UNVERIFIED — 无 FAIL，但有判据在当前视角下无法验证（不是通过）"
   echo "        请按上面的提示补齐验证，不要把 UNVERIFIED 当绿灯"
-  exit 3
+  exit 6
 fi
 echo "RESULT: OK — 无 FAIL（WARN 项请人工判断）"
