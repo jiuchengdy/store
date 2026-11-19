@@ -50,6 +50,9 @@ async function createJob(status: string, contactEmail: string | null = 'buyer@ex
 // Every tick claims at most one job whose run_at is due; push it back into the
 // past so the loop measures attempts, not the backoff clock.
 async function runTicks(jobId: string, times: number) {
+  // tick() claims the oldest due job in the whole schema, and earlier cases leave
+  // their own jobs queued. Close them so this loop only ever measures our job.
+  await testQuery(Prisma.sql`UPDATE jobs SET done = true WHERE done = false AND id <> ${jobId}`)
   for (let i = 0; i < times; i += 1) {
     await testQuery(Prisma.sql`UPDATE jobs SET run_at = now() - interval '1 second', locked_until = NULL WHERE id = ${jobId}`)
     await tick()
@@ -125,6 +128,30 @@ suite('fulfillment retry budget', () => {
     const job = await db.job.findUniqueOrThrow({ where: { id: jobId } })
     expect(job.done).toBe(false)
     expect(job.attempts).toBe(0)
+  })
+
+  it('notifies the buyer again when the order fails a second time', async () => {
+    mockedFulfill.mockRejectedValue(new UpstreamError('PRODUCT_DISABLED', 1, false))
+    const { orderId, jobId } = await createJob('processing')
+
+    await runTicks(jobId, 20)
+    expect((await db.order.findUniqueOrThrow({ where: { id: orderId } })).status).toBe('failed')
+
+    // Manual retry: the operator puts the order back into processing and reopens
+    // the job. A second failure must reach the buyer, not be swallowed as a
+    // duplicate of the first one.
+    await db.order.update({ where: { id: orderId }, data: { status: 'processing' } })
+    await db.job.update({
+      where: { id: jobId },
+      data: { done: false, attempts: 0, runAt: new Date(0), lockedUntil: null },
+    })
+    await runTicks(jobId, 20)
+
+    const mails = await db.emailOutbox.findMany({
+      where: { orderId, status: 'failed' },
+      orderBy: { episode: 'asc' },
+    })
+    expect(mails.map((mail) => mail.episode)).toEqual([1, 2])
   })
 
   it('records that no email could be sent when the order has no contact address', async () => {

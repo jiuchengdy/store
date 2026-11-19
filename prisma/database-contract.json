@@ -381,6 +381,10 @@
       "definition": "integer|true|0"
     },
     {
+      "key": "email_outbox.episode",
+      "definition": "integer|true|1"
+    },
+    {
       "key": "email_outbox.id",
       "definition": "text|true|"
     },
@@ -1775,6 +1779,10 @@
       "definition": "NOT NULL attempts"
     },
     {
+      "key": "email_outbox.email_outbox_episode_not_null",
+      "definition": "NOT NULL episode"
+    },
+    {
       "key": "email_outbox.email_outbox_id_not_null",
       "definition": "NOT NULL id"
     },
@@ -1787,8 +1795,8 @@
       "definition": "NOT NULL order_id"
     },
     {
-      "key": "email_outbox.email_outbox_order_id_status_key",
-      "definition": "UNIQUE (order_id, status)"
+      "key": "email_outbox.email_outbox_order_id_status_episode_key",
+      "definition": "UNIQUE (order_id, status, episode)"
     },
     {
       "key": "email_outbox.email_outbox_pkey",
@@ -3037,8 +3045,8 @@
       "definition": "CREATE UNIQUE INDEX demo_mailbox_pkey ON demo_mailbox USING btree (browser_digest, email)"
     },
     {
-      "key": "email_outbox.email_outbox_order_id_status_key",
-      "definition": "CREATE UNIQUE INDEX email_outbox_order_id_status_key ON email_outbox USING btree (order_id, status)"
+      "key": "email_outbox.email_outbox_order_id_status_episode_key",
+      "definition": "CREATE UNIQUE INDEX email_outbox_order_id_status_episode_key ON email_outbox USING btree (order_id, status, episode)"
     },
     {
       "key": "email_outbox.email_outbox_pkey",
@@ -3302,7 +3310,7 @@
     },
     {
       "key": "enqueue_order_email",
-      "definition": "CREATE OR REPLACE FUNCTION enqueue_order_email()\n RETURNS trigger\n LANGUAGE plpgsql\nAS $function$\nBEGIN\n  IF NEW.contact_email IS NOT NULL AND (TG_OP='INSERT' OR NEW.status IS DISTINCT FROM OLD.status) THEN\n    INSERT INTO email_outbox(id,order_id,status) VALUES(NEW.id||':'||NEW.status,NEW.id,NEW.status) ON CONFLICT DO NOTHING;\n  END IF;\n  RETURN NEW;\nEND $function$"
+      "definition": "CREATE OR REPLACE FUNCTION enqueue_order_email()\n RETURNS trigger\n LANGUAGE plpgsql\nAS $function$\nDECLARE\n  next_episode integer;\nBEGIN\n  IF NEW.contact_email IS NOT NULL AND (TG_OP='INSERT' OR NEW.status IS DISTINCT FROM OLD.status) THEN\n    SELECT COALESCE(MAX(episode),0)+1 INTO next_episode\n      FROM email_outbox WHERE order_id=NEW.id AND status=NEW.status;\n    INSERT INTO email_outbox(id,order_id,status,episode)\n      VALUES(NEW.id||':'||NEW.status||':'||next_episode,NEW.id,NEW.status,next_episode)\n      ON CONFLICT DO NOTHING;\n  END IF;\n  RETURN NEW;\nEND $function$"
     },
     {
       "key": "record_funnel_order",

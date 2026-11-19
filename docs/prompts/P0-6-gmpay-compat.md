@@ -87,7 +87,7 @@
    - **3b 核对接口正常返回但不符**（amount 或 currency 与订单不同）→ **订单不入账**（状态不变、不发货）、`risk_events` 新增一条（`reference_id`=订单 id，`facts` 含预期/实收）、**对网关仍回 `ok` 200**，且日志里能看出「收到回调但未入账」。少付/改单号/复用订单号都不许发货。
 4. **10002**：mock 网关回 `10002` → 不重复建单、不进已支付、后台可见人工处置提示。
 5. **10041**：preflight 在 `APP_URL` 指内网/不可解析时判 FAIL；指公网域名时 PASS；未启用 gmpay 时不检查。
-6. **回归**：`bun run check` 0 error；带 `TEST_DATABASE_URL` **326 passed / 0 skipped**（新增用例则报数与新增条数必须对得上，**同时报 passed 与 skipped**）；`bun run db:verify` **335/393/85/6/6**；契约 `--check` exit 0。
+6. **回归**：`bun run check` 0 error；带 `TEST_DATABASE_URL` **326 passed / 0 skipped**（新增用例则报数与新增条数必须对得上，**同时报 passed 与 skipped**）；`bun run db:verify` **336/394/85/6/6**；契约 `--check` exit 0。
 7. **不误伤**：`signatures.ts` 的 `git diff` 为空；`post()` 仍发 form-urlencoded；XorPay/易支付用例全绿；`orders.status` 未新增取值。
 8. **trade_id 不符（q 的第八条 live 验收，实现者用 mock 覆盖）**：造一条**签名正确、status=2，但 `trade_id` 与本地 `paymentId` 不同**的回调 → **不入账**（订单状态不变）、`risk_events` 新增一条（`facts` 里能看出两边 trade_id）、**仍回 `ok` 200**；且验证判定顺序：让这条的金额**恰好等于**订单金额，仍然必须判 `mismatch`（证明「先 trade_id 再金额」没写反）。
 9. **10008 / 占位单（洞 2）**：`checkout-counter-resp` 回 `status_code=10008` 或 `status=4` → 归 `manual`：不入账、`risk_events` 一条、回 `ok`；**不许**当成 `unreachable` 走「靠签名入账」那条路。
@@ -104,7 +104,7 @@ bun run db:verify
 bun scripts/ops/gen-contract.ts --check
 ```
 
-基线：`check` 0 error；`test` 41 文件 / 326 passed / 0 skipped（**裸跑会静默跳过 170 项仍显全绿，报数必须同时报 passed 与 skipped**）；`db:verify` 335/393/85/6/6；契约 check exit 0。
+基线：`check` 0 error；`test` 41 文件 / 326 passed / 0 skipped（**裸跑会静默跳过 170 项仍显全绿，报数必须同时报 passed 与 skipped**）；`db:verify` 336/394/85/6/6；契约 check exit 0。
 
 ## 7. 交付格式
 

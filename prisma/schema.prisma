@@ -195,12 +195,13 @@ model EmailOutbox {
   id       String    @id
   orderId  String    @map("order_id")
   status   String
+  episode  Int       @default(1)
   attempts Int       @default(0)
   runAt    DateTime  @default(now()) @map("run_at") @db.Timestamptz(6)
   sentAt   DateTime? @map("sent_at") @db.Timestamptz(6)
   order    Order     @relation(fields: [orderId], references: [id], onDelete: NoAction, onUpdate: NoAction)
 
-  @@unique([orderId, status])
+  @@unique([orderId, status, episode])
   @@map("email_outbox")
 }
 

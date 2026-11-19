@@ -41,9 +41,15 @@ END $$;
 CREATE FUNCTION enqueue_order_email() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
+DECLARE
+  next_episode integer;
 BEGIN
   IF NEW.contact_email IS NOT NULL AND (TG_OP='INSERT' OR NEW.status IS DISTINCT FROM OLD.status) THEN
-    INSERT INTO email_outbox(id,order_id,status) VALUES(NEW.id||':'||NEW.status,NEW.id,NEW.status) ON CONFLICT DO NOTHING;
+    SELECT COALESCE(MAX(episode),0)+1 INTO next_episode
+      FROM email_outbox WHERE order_id=NEW.id AND status=NEW.status;
+    INSERT INTO email_outbox(id,order_id,status,episode)
+      VALUES(NEW.id||':'||NEW.status||':'||next_episode,NEW.id,NEW.status,next_episode)
+      ON CONFLICT DO NOTHING;
   END IF;
   RETURN NEW;
 END $$;
@@ -215,6 +221,10 @@ CREATE TABLE email_outbox (
     id text NOT NULL,
     order_id text NOT NULL,
     status text NOT NULL,
+    -- A later, separate episode of the same status may notify again: 'failed' ->
+    -- manual retry -> 'failed' must reach the buyer twice. Within one episode the
+    -- status must actually change, otherwise the trigger is a no-op.
+    episode integer DEFAULT 1 NOT NULL,
     attempts integer DEFAULT 0 NOT NULL,
     run_at timestamp with time zone DEFAULT now() NOT NULL,
     sent_at timestamp with time zone
@@ -590,7 +600,7 @@ ALTER TABLE ONLY demo_mailbox
     ADD CONSTRAINT demo_mailbox_pkey PRIMARY KEY (browser_digest, email);
 
 ALTER TABLE ONLY email_outbox
-    ADD CONSTRAINT email_outbox_order_id_status_key UNIQUE (order_id, status);
+    ADD CONSTRAINT email_outbox_order_id_status_episode_key UNIQUE (order_id, status, episode);
 
 ALTER TABLE ONLY email_outbox
     ADD CONSTRAINT email_outbox_pkey PRIMARY KEY (id);

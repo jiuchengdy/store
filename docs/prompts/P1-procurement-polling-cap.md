@@ -52,7 +52,7 @@
 4. **幂等未被破坏**：已有 `upstreamOrderId` 的采购单不再 `POST /orders`（mock 断言 create 次数为 0）。上游真的重复提交时，判据是「**返回同一个 `order_id`、上游订单数不增、`ok:true`**」——**不要等 10002**。
 5. **manual 商品**：后台映射页对 `manual` 上游商品有可见提示；mock 一次 `manual` 商品建单 → `PurchaseRejection` → `state='rejected'`（证明提示对应真实失败路径）。
 6. **不误伤**：`dujiao.ts` 的 `git diff` 为空；`dujiao.test.ts`、`procurement.test.ts` 全绿；`orders.status` 未新增取值。
-7. **回归**：`bun run check` 0 error；带 `TEST_DATABASE_URL` 报数时**同时报 passed / skipped**（基线 326 / 0，新增用例要能对上）；`bun run db:verify` 仍 **335/393/85/6/6**（本单不迁移，数字必须不变）；契约 `--check` exit 0。
+7. **回归**：`bun run check` 0 error；带 `TEST_DATABASE_URL` 报数时**同时报 passed / skipped**（基线 326 / 0，新增用例要能对上）；`bun run db:verify` 仍 **336/394/85/6/6**（本单不迁移，数字必须不变）；契约 `--check` exit 0。
 
 ## 5. 命令与基线
 

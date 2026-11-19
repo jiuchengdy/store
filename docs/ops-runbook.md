@@ -8,8 +8,8 @@
 
 | 事实 | 证据 |
 |---|---|
-| 备份→恢复链路可用 | `pg_dump -Fc` 92 KB / `pg_restore` 0.4 秒 / `db:verify` 335 列·393 约束·85 索引·6 触发器·6 函数 全过 |
-| `db:verify` 只量骨架，量不出数据 | 一份 `--schema-only` 的空壳 dump 照样 335/393/85/6/6 全过，所以演练必须另比行数 |
+| 备份→恢复链路可用 | `pg_dump -Fc` 92 KB / `pg_restore` 0.4 秒 / `db:verify` 336 列·394 约束·85 索引·6 触发器·6 函数 全过 |
+| `db:verify` 只量骨架，量不出数据 | 一份 `--schema-only` 的空壳 dump 照样 336/394/85/6/6 全过，所以演练必须另比行数 |
 | `db:init` **只能跑在空库上** | 非空 schema 直接抛 `Database initialization requires an empty schema` |
 | 仓库里没有 Prisma migrations | `prisma/migrations` 不存在；增量靠 `prisma/updates/*.sql` 手工执行，无版本账本 |
 | `db:verify` 是**精确比对**，不是兼容检查 | 多加一列即报 `Unexpected columns: users.<col>` |

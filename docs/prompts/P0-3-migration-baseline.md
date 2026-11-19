@@ -11,7 +11,7 @@
 ## 1. 现状（已核实的代码事实，不要重新论证）
 
 - `scripts/init-database.ts`：非空库直接拒绝（`Database initialization requires an empty schema`）。
-- **真正的 schema 源头是 `prisma/init.sql`**（335 列 / 393 约束 / 85 索引 / 6 触发器 / 6 函数全在里面），`prisma/migrations` 是空的（历史被 `e7dcd59` 移除过）。
+- **真正的 schema 源头是 `prisma/init.sql`**（336 列 / 394 约束 / 85 索引 / 6 触发器 / 6 函数全在里面），`prisma/migrations` 是空的（历史被 `e7dcd59` 移除过）。
 - `scripts/verify-database.ts`（`bun run db:verify`）是**精确比对**：多一列就红（`Unexpected columns: ...`），少一条约束也红。
 - `scripts/ops/gen-contract.ts` 已存在：`bun scripts/ops/gen-contract.ts` 从活库重生成 `prisma/database-contract.json`；`--check` 只校验不写。
 - 健康探针现状（**我第一版写错，这里已更正**）：web **有** HEALTHCHECK，来自镜像 `Dockerfile:59-60`（`docker-entrypoint.sh healthcheck`），compose 没覆盖它。但探针打的是 `/robots.txt`（`docker-entrypoint.sh:24`），**只判断 HTTP 200，完全不碰数据库**；而且 `compose.prod.yaml` 里没有任何服务等 web 健康、也没有 autoheal，**这个状态没人消费**。worker 则是显式 `healthcheck: disable: true`。
@@ -32,7 +32,7 @@
 
 ## 3. 实现要点
 
-1. **引导问题（bootstrap）——已核实，原判据是错的**：`db:verify` 只统计 `src/server/database-catalog.ts` 里硬编码的 34 张 `managedTables` 白名单，`schema_version` 不在其中，因此**加这张表不会让 `db:verify` 变红（仍是 335/393/85/6/6），契约 json 也不会 diff，不需要重生成**。副作用相反：账本表不在白名单里，等于它的删改永远不会被 `db:verify` 发现——「把 `schema_version` 加进 `managedTables`」单独一个提交排在本轮之后（届时列数变 339，基线数字、契约、CI 判据一起改，不与本轮同提交）。业务表的迁移仍然必须 `gen-contract`。
+1. **引导问题（bootstrap）——已核实，原判据是错的**：`db:verify` 只统计 `src/server/database-catalog.ts` 里硬编码的 34 张 `managedTables` 白名单，`schema_version` 不在其中，因此**加这张表不会让 `db:verify` 变红（仍是 336/394/85/6/6），契约 json 也不会 diff，不需要重生成**。副作用相反：账本表不在白名单里，等于它的删改永远不会被 `db:verify` 发现——「把 `schema_version` 加进 `managedTables`」单独一个提交排在本轮之后（届时列数变 340，基线数字、契约、CI 判据一起改，不与本轮同提交）。业务表的迁移仍然必须 `gen-contract`。
 2. 迁移文件只用**编号 + 下划线**命名（`0002_add_payment_capability.sql`），排序即执行顺序。
 3. 幂等：同一迁移重复执行不报错、不重复记账（查 `schema_version` 决定是否执行，同时用 checksum 检出"已应用的 SQL 被偷偷改过"→ 直接报错退出，不要静默重跑）。
 4. 事务边界：**一个文件一个事务**，禁止把多个文件包进一个大事务（一次失败会倒退到很远）。
@@ -85,7 +85,7 @@ bun run db:verify
 bun scripts/ops/gen-contract.ts --check
 ```
 
-基线：`check` 0 error；`test` 41 文件 / **326 passed / 0 skipped**（带 `TEST_DATABASE_URL`；裸跑会静默跳过 170 项并显示全绿，**报数必须同时报 passed 与 skipped**）；`db:verify` 335/393/85/6/6；契约 check exit 0。
+基线：`check` 0 error；`test` 41 文件 / **326 passed / 0 skipped**（带 `TEST_DATABASE_URL`；裸跑会静默跳过 170 项并显示全绿，**报数必须同时报 passed 与 skipped**）；`db:verify` 336/394/85/6/6；契约 check exit 0。
 
 ## 7. 交付格式
 
