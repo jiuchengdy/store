@@ -78,6 +78,7 @@ XorPay 查询：`GET https://xorpay.com/api/query/{aoid}`，**无需签名/密�
 - 容器形态的事实依据：`compose.prod.yaml:31 read_only: true`，且 compose 里**没有 `.data` 挂载**。所以 `crypto.ts:8-19` 的 `.data/encryption.key` 回落路径在容器里不是合法来源（写不进；即使打进镜像，换镜像即消失，那批密文全废）。
 - 从宿主机判断"容器内路径是否在 volume 里"不可判定，只能输出"不知道"，不许给 PASS。
 - 验收前先跑 `scripts/ops/deployer-preflight.sh`（覆盖已知清单），但**它替代不了"有人照文档真走一遍"**——脚本只验它想到的东西。
+- 判据涉及退出码时：该码必须在 `docs/ops/exit-codes.md` 登记表里**占过位**，且码表与脚本在同一次提交更新；没登记过的码不许写进判据。
 
 
 1. `payed` 与 `success` 两态都能补入账，且 `payment_events` 只多一条。

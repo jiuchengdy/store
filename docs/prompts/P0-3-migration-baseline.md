@@ -62,6 +62,7 @@
 - 涉及卷与只读性的判据：`compose.prod.yaml:31 read_only: true`，容器内除 `/tmp` 与 `/app/.next/cache` 外不可写——迁移脚本不要往工作目录写临时文件。
 - 从宿主机判断"容器内路径是否在 volume 里"不可判定，只能输出"不知道"。
 - 验收前先跑 `scripts/ops/deployer-preflight.sh`（已知清单），但它替代不了"照文档走一遍"。
+- 判据涉及退出码时：该码必须在 `docs/ops/exit-codes.md` 登记表里**占过位**，且码表与脚本在同一次提交更新；没登记过的码不许写进判据。
 
 
 1. 空库从零跑完所有编号 SQL → `db:verify` 绿 **且** `gen-contract --check` 绿（两个都绿才算）。

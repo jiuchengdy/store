@@ -48,6 +48,7 @@
 - 容器形态事实：`compose.prod.yaml:31 read_only: true`、无 `.data` 挂载，`crypto.ts:8-19` 的 `.data/encryption.key` 回落不算合法来源。
 - 从宿主机判断容器内挂载只能给"不知道"，不许 PASS。
 - 验收前先跑 `scripts/ops/deployer-preflight.sh`，但它替代不了"照文档走一遍"。
+- 判据涉及退出码时：该码必须在 `docs/ops/exit-codes.md` 登记表里**占过位**，且码表与脚本在同一次提交更新；没登记过的码不许写进判据。
 
 
 1. 上游返回 `{"ok":false,"error_code":"stock_unavailable"}`：`state='rejected'`、`lastError='stock_unavailable'`，**15 分钟内零次重试**（查 `next_run_at` 不再前移）。

@@ -49,6 +49,7 @@
 - 出货 worker 在**容器内**运行（compose 里 `worker` 服务），判据要写清是容器内跑还是宿主机直跑。
 - 容器只读根文件系统（`compose.prod.yaml:31`），本单不写盘，若实现里引了临时文件写入必须改掉。
 - 验收前先跑 `scripts/ops/deployer-preflight.sh`，但它替代不了"照文档走一遍"。
+- 判据涉及退出码时：该码必须在 `docs/ops/exit-codes.md` 登记表里**占过位**，且码表与脚本在同一次提交更新；没登记过的码不许写进判据。
 
 
 1. 造一个永远失败的上游（mock 抛永久性错误）：连续 tick 到第 20 次后，订单 `status='failed'`、`failureReason='fulfillment_retry_exhausted'`、job `done=true`。
