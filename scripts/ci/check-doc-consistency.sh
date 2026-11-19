@@ -52,7 +52,13 @@ done
 check "客服剧本写明值班人" grep -q "值班人" "${PLAYBOOK}"
 check "运维手册写明值班人" grep -q "值班人" "${RUNBOOK}"
 
-# ---- 规则 6：巡检不得退回「只扫 processing」的旧口径 ----
+# ---- 规则 6：退款时限必须有机器提醒（D 类）且状态取值已标注 ----
+check "运维手册含 D 类（退款超时巡检）" grep -q "D 退款超时" "${RUNBOOK}"
+check "客服剧本的时限表指向 D 类" grep -q "D 类" "${PLAYBOOK}"
+check "两份文档都标注 processing 为历史/自动退款遗留" bash -c \
+  "grep -q '历史/自动退款遗留' '${PLAYBOOK}' && grep -q '历史/自动退款遗留' '${RUNBOOK}'"
+
+# ---- 规则 7：巡检不得退回「只扫 processing」的旧口径 ----
 # 允许出现 processing，但同一处不许再说「crypto 单停在 processing」。
 hits=$(grep -rn "停在 \`processing\`\|停在 processing" docs/*.md 2>/dev/null || true)
 if [ -n "${hits}" ]; then printf '%s\n' "${hits}" >&2; fi
