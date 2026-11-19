@@ -89,7 +89,7 @@ Raw query failed. Code: `42703`. Message: `column "xxx" does not exist`
 
 ```sh
 DB_CONTAINER=<postgres-container> BACKUP_DIR=/var/backups/getcodex \
-RETENTION_DAYS=7 REMOTE=ops@192.168.0.1:/srv/store-backups \
+RETENTION_DAYS=7 REMOTE=ops@backup.example.invalid:/srv/store-backups \
   sh scripts/ops/backup-db.sh
 ```
 
@@ -100,7 +100,7 @@ RETENTION_DAYS=7 REMOTE=ops@192.168.0.1:/srv/store-backups \
 crontab：
 
 ```cron
-17 * * * * cd /srv/store && DB_CONTAINER=store-postgres-1 BACKUP_DIR=/var/backups/getcodex REMOTE=ops@192.168.0.1:/srv/store-backups sh scripts/ops/backup-db.sh >> /var/log/getcodex-backup.log 2>&1
+17 * * * * cd /srv/store && DB_CONTAINER=store-postgres-1 BACKUP_DIR=/var/backups/getcodex REMOTE=ops@backup.example.invalid:/srv/store-backups sh scripts/ops/backup-db.sh >> /var/log/getcodex-backup.log 2>&1
 ```
 
 每次运行产出三个文件，缺一个都不算完整备份：`.dump`（数据）、`.dump.sha256`（校验和，**写的是相对路径**，搬到异地后仍可 `shasum -c`）、`.dump.counts`（9 张钱与人相关表的行数，供演练核对）。
@@ -151,7 +151,7 @@ DRILL_BASE_URL="postgresql://getgpt:<pw>@127.0.0.1:5432/__DB__" \
 
 **为什么固定抽「最早 + 最新」而不是随机抽一条**：换过钥匙的库会呈现「新写入的可解、老密文全废」。只抽最新会拿到 `PASS`，而两批货已经全废——已实测复现过这个假绿。最早那条验「历史数据还能读」，最新那条验「当前密钥与写入路径一致」，两种失败必须分开报。
 
-退出码与告警分级（**必须绑死，否则告警会被自己关掉**）。数字定义以 [`docs/ops/exit-codes.md`](ops/exit-codes.md) 为准，下表只写**谁该被叫醒**：
+退出码含义见各脚本开头的说明；下表用于确定告警联系人：
 
 | 退出码 | 含义 | 处置 |
 |---|---|---|
@@ -165,7 +165,6 @@ DRILL_BASE_URL="postgresql://getgpt:<pw>@127.0.0.1:5432/__DB__" \
 
 演练用的 `ENCRYPTION_KEY` 必须**临时注入**，不要写进脚本或 cron 行里的明文。
 
-**退出码登记表在 [`docs/ops/exit-codes.md`](ops/exit-codes.md)，本手册不维护第二份。**
 
 只留两条必须记住的：
 

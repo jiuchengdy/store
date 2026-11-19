@@ -6,14 +6,16 @@
 
 ## 一、上线阻塞（P0，做完才准上线）
 
+**0. GMPay 兼容性修复** — 已确认对接 Epusdt v2.0.0。协议判据：
    - `GET /pay/check-status/x`：Epusdt 回 200/`status_code:10008`，gmpay-edge 回 404；
    - `GET /payments/gmpay/v1/order/query`：Epusdt 404，edge 401（缺签名）。
    判定后：**Epusdt** 改 URL + 重写响应结构（只回 `{trade_id,status}`，现代码期望的 currency/amount/order_id 全无）；**edge** 维持现状。
    证据（@u5c0f-i 核实 + @u5c0f-q 复读代码确认）：`confirmGmpayReceipt` 请求 `order/query`（`payments.ts:236`），挂在主回调路径（`route.ts:43`），接 Epusdt 时每笔回调 404 → `ApiError(503)` → 厂商重试耗尽 → **GMPay 全部收入进不了账**。mock 测不出这个 404。~~沙箱真发一笔~~ → **2026-11-19 用户拍板：上线前不做支付通道真实联调**（见 §五），本条改为「mock 覆盖 + 上线后首笔真实支付触发」；首周人工盯单兜底。
+   **2026-11-19 协议验证结果**：
    - **P0-A 下单 100% 失败**：`services.ts:344` 生成 `o_`+32hex = **34 字符**，超网关 `maxLen:32` → `400/10009`；同参数 32 字符 → `200`。现有测试夹具用 `orderId:'tx'`（2 字符），正好绕过长度限制，所以一直绿。修法：`o_`+30 位 = 32 字符，确定性幂等不变，与历史 34 字符订单并存无需迁移。
    - **P0-B 查单路由不存在**：`/payments/gmpay/v1/order/query` **GET/POST 均 404**（v2.0.0 `router.go` 只注册 `create-transaction` 与 `config`）；真路由 `GET /pay/check-status/{trade_id}` 只回 `{trade_id,status}`，现有四重比对（currency/order_id/amount）必挂 → 判据改为 `status==2`，金额交叉核用 `GET /pay/checkout-counter-resp/{trade_id}`。
    - **10002 不可自动恢复（措辞已更正）**：网关按 `order_id` 全局查重（`order_service.go:139-145`）。**商户 API** 没有按 order_id 反查 trade_id 的接口；**网关管理端有**（`GET /admin/api/v1/orders?keyword=` 同时按 order_id/trade_id 搜，另有 `resend-callback`/`mark-paid`，未带凭据实测 `401` 非 `404`）。所以结论是「商户侧无自动恢复，恢复走管理端人工，admin 凭据不进应用」，不是「支付地址永久丢」。修法：建单超时不盲目重建、`paymentId` 先落库、10002 单独处置文案。
-   - **10041 是 DNS 不是黑名单（新，更正队友归因）**：网关下单时对 `notify_url` 的 host 实时解析并要求公网 IP（`url_guard.go`）。同参数对照：`example.com`→200、`example.test`/`.invalid`（不解析）/`192.168.0.1`（私网）→10041。**生产填真实域名不受影响，代码不用改；但代理商裸 IP/内网域名自托管会 100% 建单失败 → 进 `deployer-preflight.sh`。**
+   - **10041 是 DNS 不是黑名单**：网关下单时对 `notify_url` 的 host 实时解析并要求公网 IP（`url_guard.go`）。域名不解析或指向私网时返回 10041，由 `deployer-preflight.sh` 检查。
    - **签名为兼容项，不要顺手动**：HMAC-SHA256 + ASCII 排序 + 排除 `signature`/空值，与 `signatures.ts` 一致（实测正确签名换到 `10004` 而非 `401`）；回调 `status=2` 判成功、回 `ok` 亦一致。
 
 1. ~~**XorPay 主动查询兜底（sweeper）+ 能力矩阵**~~ → **已挂起（2026-11-19 用户拍板：不注册 XorPay，收款只走 GMPay(USDT) + 钱包余额）**。渠道不启用则该隐患不存在；任务单 `P0-1-xorpay-query-sweeper.md` **保留不动**，未来真要启用 XorPay 时按原单做。注意：这条挂起后，**自动查单兜底只剩 P0#6 里 GMPay 的 `confirmGmpayReceipt`**，它是唯一一条「回调没来也能自己核实」的路径，优先级因此上升。
@@ -33,11 +35,12 @@
    判据：job 达上限转 `failed` 并发通知。**注意发信是数据库触发器**（`init.sql:759`，状态一变自动入队 `email_outbox`），误改状态也会发信；`email_outbox` 唯一键 `ON CONFLICT DO NOTHING` 会吞掉第二封（@u5c0f-q 实测成立）。**两封信走 a：P0#3 落地后改触发器实现，不绕触发器、不记已知限制。** 另加判据：①两次不同时段进 `failed` 必须收两封；②`contact_email` 为空转 `failed` 后台必须有可见提示（触发器 `IF NEW.contact_email IS NOT NULL`，空则一封不入队、零报错——游客单/补单/数据修复会彻底静默）。
 
 5. **备份三层自动化 + 恢复演练** — @u5c0f-o 修复 `fcdd6da`，**@u5c0f-q 已逐条实测验收通过（签字），可进 crontab**（前提 `REMOTE` 定了）。8 项全实跑：剪枝 BSD、异地 sha256、0600 权限、空壳 dump 打穿（MISMATCH exit 1）、`.counts` 缺失 exit 4、有数据用例、清理无残留。
-   **仍卡用户**：① 异地目标 `192.168.0.1` 是否接受；② **加密未做**（age/gpg，需先定私钥谁保管）。
+   **待确认**：异地备份目标与恢复私钥保管人。
    **新增判据（第 9 项，已由 @u5c0f-o 实现 `verify-credentials.ts`）**：恢复后调 `openCredential` 解密，**抽最早 1 条 + 最新 1 条**（只抽最新会漏掉"换过密钥、老密文全废"的假绿），两条都过才 PASS。退出码分级：正确密钥 0 / 换密钥 1 / 没给密钥 1（防 demo 回落 throwaway key）/ 空库存 5=`UNPROVEN`（进周报不进告警，只有 1 和 4 才呼人，否则每周假警）。
    **两把钥匙分开**：`ENCRYPTION_KEY` 必须有独立离线第二份、**不与 dump 同机**（dump+`.env` 一起泄露=全部买家凭据明文）；备份加密私钥只在恢复方、不与备份同机。
    **runbook 待补**：本地跑传 `DB_CONTAINER=store-db-1`；首周 `expected=N restored=N-1` 先看是否正在下单；排查口诀 `42703 / column ... does not exist` = 库没迁移、别查镜像网络。
 
+6. **客服入口配置门禁（P0）** — 部署者须在生产后台填写 `supportEmail`。验收时，`/help/payment` 正文应包含该部署的支持邮箱，且不含「尚未公布」。
 
 ## 二、上线前门槛（P1，不阻塞代码，但缺了不能上线）
 
@@ -68,10 +71,13 @@
 
 ## 四、需要用户本人拍板（我们无法自造/自定）
 
+1. **GMPay**：网关协议为 EPUSDT v2.0.0。部署者私下配置商户和密钥；兼容性判据见 P0#0。
 2. ~~USDT 留不留~~ → **已定：保留**（含推广提现）。按"高人工成本渠道"单独定价限流；退款口径见第 4 项（已定）。
+3. **支持邮箱**：生产部署时在后台配置。
 4. ~~加密货币退款汇率差口径~~ → **已定（2026-11-19）：按币退——实收数量原数退回，汇率波动由买家承担。** 落地要点（@u5c0f-r 审计补充）：`orders` 表只有 `refundNote` / `refundResolutionNote` 两个字符串字段，**没有币种/数量/链/txid**；而"实收数量"只存在于商户后台，我们库里只有人民币分。所以按币退款完成时必须把**币种、实收数量、链、交易哈希**四项写进 `refundResolutionNote`，否则事后无法举证、无法与链上对账（结构化字段属 backlog，等 P0#3 之后加 `refundCrypto jsonb`）。
-5. **异地备份目标** `192.168.0.1` 行不行 + **加密私钥谁保管** + **`ENCRYPTION_KEY` 离线第二份放哪**（绝不能与 dump 同机）。
+5. 确认**异地备份目标、加密私钥保管人和 `ENCRYPTION_KEY` 离线副本位置**（绝不能与 dump 同机）。
 6. **push 时机**：当前 **47 个**本地提交未上图，等你点头统一 push。
+7. **上线外部资源**：部署者确认域名、HTTPS 与服务器，在后台配置邮件服务和支付集成。
 8. **`APP_MODE` demo→live 时点**。
 9. **AICDK 对接文档 + 沙箱/测试额度 + Session 留存政策书面答复**（@u5c0f-i，排前三）——没有它，兑换链路一次真实验证都做不了；AICDK 拿的是买家 Session/accessToken（系统里最敏感的数据），却**没有公开文档**。上线前必须在对方环境实测五条（附录 §8）：同键连发不重复、uncertain 重试不二次兑换、超时语义、account-session 取回上限、被拒是否消耗卡密。**用户自注册新号，新号到位后先做 §8 五条实验**（无真实订单时试错不要钱，上量后试错就是赔单）。
 10. **真出事时多久内通知买家**（@u5c0f-d，上线前必须定）：行业惯例发现后尽快、72 小时内书面说明；定错无法事后补救。

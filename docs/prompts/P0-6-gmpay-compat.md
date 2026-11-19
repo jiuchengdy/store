@@ -11,6 +11,7 @@
 
 ## 1. 现状（2026-11-19 线上实测，不要重新论证）
 
+网关协议：EPUSDT **v2.0.0**。使用本地 mock 验收，不需要生产商户信息或密钥。
 
 | 编号 | 缺陷 | 实测证据 |
 |---|---|---|
@@ -18,7 +19,7 @@
 | P0-B | 付款不入账 | `confirmGmpayReceipt` 调 `GET /payments/gmpay/v1/order/query`；v2.0.0 `src/route/router.go` 只注册 `POST /order/create-transaction` 与 `GET /config`，该路径 **GET/POST 均 404** → 代码抛 `503「支付状态暂时无法核实」` → `notify/.../route.ts` 的 `acceptPayment` 永不执行 |
 | P1-C | 改路由也不够 | 真路由 `GET /pay/check-status/{trade_id}` 只回 `{trade_id, status}`；现有 `currency/order_id/amount` 四重比对全部是 `undefined`，必抛「支付查询结果不匹配」 |
 | P1-D | 10002 不可**自动**恢复 | 网关按 `order_id` 全局查重（`order_service.go:139-145`，进程内锁）。**商户 API** 没有按 `order_id` 反查 `trade_id` 的接口，但**网关管理端有**：`GET /admin/api/v1/orders?keyword=` 可按 order_id/trade_id 搜，另有 `resend-callback`、`mark-paid`（实测未带凭据返回 `401` 而非 `404`，路由确实存在）。结论：**商户侧无自动恢复，恢复走管理端人工；admin 凭据不进应用、不写仓库/板子** |
-| P2-E | 10041 环境项 | 网关下单时对 `notify_url` 的 host 做**实时 DNS 解析**并要求全部解析到公网 IP（`src/util/security/url_guard.go`）。实测 `example.com`→200；`example.test`/`no-such-host-*.com`（不解析）/`192.168.0.1`（私网）→`10041`。**不是代码 bug，是部署体检项** |
+| P2-E | 10041 环境项 | 网关下单时对 `notify_url` 的 host 做**实时 DNS 解析**并要求全部解析到公网 IP（`src/util/security/url_guard.go`）。域名不解析或指向私网时返回 `10041`。**不是代码 bug，是部署体检项** |
 
 **已核实正确、不要改**：
 - 签名：HMAC-SHA256 + 参数名 ASCII 排序 + 排除 `signature` 与空值，与网关 `src/util/sign/sign.go` 一致。实测用 store 的算法自签，金额非法时网关回 `10004` 而**不是** `401`，说明签名通过。

@@ -6,13 +6,12 @@
 # translates them into its own table. If a workflow called the probe directly,
 # its 3 ("no inventory rows") would collide with restore-drill's 3 ("no dump
 # found") inside the same CI run, and the two mean opposite things.
-# See docs/ops/exit-codes.md ("who consumes which table").
 #
 # Design note: a missing/renamed workflow directory must FAIL, not pass. A guard
 # that cannot read its subject is not a guard — grep exit 2 (error) is treated
 # as a failure, not as "no match".
 #
-# Exit codes (registered in docs/ops/exit-codes.md):
+# Exit codes:
 #   0 = clean (no direct call, and the workflows directory was readable)
 #   1 = violation, or the guard could not read its subject
 set -eu

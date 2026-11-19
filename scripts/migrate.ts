@@ -10,7 +10,7 @@
 // pg_dump taken before the migration (docs/database.md); a hand-written down
 // script would only provide false confidence.
 //
-// Exit codes (registered in docs/ops/exit-codes.md before use):
+// Exit codes:
 //   0 = every migration applied or already applied (idempotent re-run)
 //   1 = execution or integrity failure: SQL error, checksum mismatch,
 //       applied SQL edited after the fact, ledger write failed

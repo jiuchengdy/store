@@ -11,7 +11,7 @@
 #   默认：容器 store-db-1、用户 getgpt、库 getgpt、测试库 getgpt_test。
 #   迁移幂等性用一个临时库完成（getgpt_gate_<pid>），跑完 drop，不碰任何现有库。
 #
-# 退出码（见 docs/ops/exit-codes.md，0/1/2 全团队共用）：
+# 退出码：
 #   0 = 四件全通过
 #   1 = 有门禁项失败（打印是哪一件）
 #   2 = 无法检查（连不上库 / 缺依赖）
@@ -87,7 +87,7 @@ else
   if printf '%s\n' "$LINE" | grep -q 'failed'; then
     FAILED="${FAILED} 串行测试有失败;"
   fi
-  printf '%s\n' "$LINE" | grep -qE 'skipped' && echo "  （报告口径：passed 与 skipped 必须成对报，见 docs/ops/exit-codes.md）"
+  printf '%s\n' "$LINE" | grep -qE 'skipped' && echo "  （报告口径：passed 与 skipped 必须成对报）"
 fi
 
 # ---- 2. db:verify ----
@@ -121,7 +121,7 @@ else
   fi
   SEC_B=$(APP_MODE=live APP_URL=https://192.168.0.1 bash "$PF" 2>&1 | sed -n '/3.5/,/^== 4/p')
   if printf '%s\n' "$SEC_B" | grep -q 'FAIL  回调 host'; then
-    echo "  反向（https://192.168.0.1，live）FAIL ✔"
+    echo "  反向（私网 IP，live）FAIL ✔"
   else
     echo "  反向（私网 IP）没有 FAIL —— 判据失效"; FAILED="${FAILED} preflight 反向未 FAIL;"
   fi

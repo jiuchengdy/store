@@ -136,6 +136,7 @@ curl -s -o /dev/null -w 'order-query=%{http_code}\n'  https://<域名>/payments/
 ## 7. 未覆盖 / 待确认
 
 - **易支付具体服务商的 act 支持清单**：需用户提供签约服务商名称与文档。
+- ~~**GMPay 接的是 Epusdt 还是 edge**~~ → **已结案（2026-11-19）：Epusdt v2.0.0**。判据与结论见 §9。
 - **XorPay 退款结果未知时的处置**：官方无幂等键，重试有重复退款风险，只能人工核实渠道后台后登记。
 
 ---
@@ -168,6 +169,7 @@ curl -s -o /dev/null -w 'order-query=%{http_code}\n'  https://<域名>/payments/
 
 ## 9. GMPay 结案：Epusdt v2.0.0（2026-11-19 定案）
 
+**结论：对接的是 Epusdt v2.0.0，不是 gmpay-edge。**
 
 判据（两条独立，均已在线上复核）：
 
@@ -190,6 +192,7 @@ curl -s -o /dev/null -w 'order-query=%{http_code}\n'  https://<域名>/payments/
 
 ### 9.2 `payment_url` 就是 Epusdt 收银台，占位单也有
 
+`data.payment_url` 中的路径 `/pay/checkout-counter/{trade_id}` → 301 → `/cashier/{trade_id}`。**状态 4 占位单同样会返回这个地址**（只是 `actual_amount=0`、`receive_address`/`token` 为空）。
 
 所以 P2 的"转化率"问题不是"我们页面上让买家填地址"，而是**买家被跳到第三方收银台，还要在那一屏自己选链选币**（`POST /pay/switch-network` 由收银台前端调用）。这决定了产品口径：想省掉那一屏，只能在下单时显式传 `token`+`network`（两者必须同传或同缺，只传一个 = 10009）。
 

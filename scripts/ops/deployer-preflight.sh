@@ -7,7 +7,7 @@
 #
 # 用法：scripts/ops/deployer-preflight.sh [--db-container <名>] [--psql-user <名>] [--db <库名>] [--deploy bare|container|auto]
 #
-# 退出码（团队统一登记表，改动前先看 docs/ops/exit-codes.md）：
+# 退出码：
 #   0 = OK        全部通过（可能有 WARN）
 #   1 = FAILED    存在必须修复项
 #   2 = 无法体检  连不上库
