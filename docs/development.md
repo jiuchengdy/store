@@ -66,6 +66,10 @@ bun run build
 
 **报数规矩（团队约定）**：报告测试结果必须同时给出 passed 与 skipped 两个数字，例如 `326 passed / 0 skipped`。裸跑时终端里没有红字，但可能有 170 项集成测试被静默跳过——只报 passed 会让人误判。
 
+**报告要分两行写，别用一个数字代表全部**：`unit: N passed / S skipped` 与 `e2e: x passed / y failed（或未跑，附原因）`。`vitest.config.ts` 的 include 只有 `src/**/*.test.ts`，**e2e 不在单测闸里**——报「326 passed」时它一分钱也没覆盖 e2e。这一条是 2026-11-19 实测踩出来的：单测 326 全绿、`tests/refunds.spec.ts` 却因为界面文案改了而红，没人发现。
+
+**文档一致性闸**：`scripts/ci/check-doc-consistency.sh`（退出码 0/1）。它检查的是「同一事实散在多份文档、改一处漂三处」这类回归——退款时效承诺、失效的渠道能力描述、内部时限数字、值班人、巡检判据。改完 `docs/` 下任意口径文档后跑一次；改规则时要按同样的方式验一次「能报」（往文档里塞一句违规、确认它真的 FAIL，再撤掉）。
+
 ## 端到端测试
 
 首次运行前必须先装浏览器，`~/Library/Caches/ms-playwright` 为空时 Playwright 一条都跑不起来：
