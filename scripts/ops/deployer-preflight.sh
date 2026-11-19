@@ -27,6 +27,7 @@ if [ "$DEPLOY" = "auto" ]; then
 fi
 
 FAIL=0
+UNVERIFIED=0
 q() { docker exec "$DB_CONTAINER" psql -U "$DB_USER" -d "$DB_NAME" -tAc "$1" 2>/dev/null; }
 pass() { printf '  PASS  %s\n' "$1"; }
 warn() { printf '  WARN  %s\n' "$1"; }
@@ -61,19 +62,38 @@ case "$KEY_SRC" in
   env)     pass "密钥来源：环境变量 ENCRYPTION_KEY（容器化与裸机都合法）" ;;
   envfile) pass "密钥来源：.env（容器化与裸机都合法）"
            [ "$DEPLOY" = "container" ] && warn "容器化时请确认 .env 是以 env_file 注入，不是打进镜像层" ;;
-  keyfile) pass "密钥来源：ENCRYPTION_KEY_FILE=${ENCRYPTION_KEY_FILE}"
-           if [ "$DEPLOY" != "container" ]; then
-             pass "  裸机/Bun 直跑：该路径只需随发布保留即可"
-           elif [ ! -f /.dockerenv ]; then
-             warn "  从宿主机无法判定容器内挂载情况：请进容器执行本脚本，或人工确认该路径是持久化卷"
-           elif [ -r /proc/self/mountinfo ]; then
-             if grep -qF "${ENCRYPTION_KEY_FILE}" /proc/self/mountinfo 2>/dev/null; then
-               pass "  该路径在挂载卷内（容器重建后仍在）"
-             else
-               fail "  该路径不在任何挂载卷内：容器重建即丢失，那批密文全部报废"
-             fi
+  keyfile) KEY_PATH="${ENCRYPTION_KEY_FILE}"
+           # 四层：是不是普通文件 → 是不是软链 → 权限 → 挂载/形态。
+           # 前三层验的是"这把钥匙本身安全"，第四层验的是"它在哪种形态下还活着"。
+           if [ -L "$KEY_PATH" ]; then
+             fail "  密钥文件是软链接：权限检查看到的是目标文件的 mode，而路径本身可猜。请指向真实文件"
+           elif [ ! -f "$KEY_PATH" ]; then
+             fail "  密钥路径不是普通文件（目录/设备/管道都不可接受）"
            else
-             warn "  无法自动确认该路径是否在持久化卷内，部署时请人工确认" ;
+             MODE=$(stat -f '%Lp' "$KEY_PATH" 2>/dev/null || stat -c '%a' "$KEY_PATH" 2>/dev/null || echo '?')
+             case "$MODE" in
+               600|400)
+                 pass "密钥来源：ENCRYPTION_KEY_FILE=${KEY_PATH}（权限 ${MODE}）"
+                 if [ "$DEPLOY" != "container" ]; then
+                   pass "  裸机/Bun 直跑：该路径只需随发布保留即可"
+                 elif [ ! -f /.dockerenv ]; then
+                   UNVERIFIED=1
+                   warn "  从宿主机无法判定容器内挂载情况：请进容器执行本脚本，或人工确认该路径是持久化卷"
+                 elif [ -r /proc/self/mountinfo ]; then
+                   if grep -qF "$KEY_PATH" /proc/self/mountinfo 2>/dev/null; then
+                     pass "  该路径在挂载卷内（容器重建后仍在）"
+                   else
+                     fail "  该路径不在任何挂载卷内：容器重建即丢失，那批密文全部报废"
+                   fi
+                 else
+                   UNVERIFIED=1
+                   warn "  容器内无法读取挂载表，持久性未验证"
+                 fi ;;
+               *)
+                 # 权限不对就不再判部署形态：一个已经 FAIL 的文件，"它是否持久化"没有意义，
+                 # 打出 PASS 只会让同一段输出自相矛盾。
+                 fail "  密钥文件权限是 ${MODE}，必须 600 或 400：world-readable 等于把钥匙贴在公屏上，宿主机任何用户都能读" ;;
+             esac
            fi ;;
   dotdata) if [ "$DEPLOY" = "container" ]; then
              fail "密钥来源只有 .data/encryption.key，容器化部署不可用：只读根文件系统写不进、打进镜像则随容器重建消失（等同换过密钥 → 那批密文全废）。请改用 ENCRYPTION_KEY 或挂载卷内的 ENCRYPTION_KEY_FILE"
@@ -115,4 +135,9 @@ else skip "不在仓库根目录，跳过品牌扫描"; fi
 
 echo
 if [ "$FAIL" -ne 0 ]; then echo "RESULT: FAILED — 存在必须修复项，不要转 live"; exit 1; fi
+if [ "$UNVERIFIED" -ne 0 ]; then
+  echo "RESULT: UNVERIFIED — 无 FAIL，但有判据在当前视角下无法验证（不是通过）"
+  echo "        请按上面的提示补齐验证，不要把 UNVERIFIED 当绿灯"
+  exit 3
+fi
 echo "RESULT: OK — 无 FAIL（WARN 项请人工判断）"
