@@ -92,6 +92,10 @@ suite('downstream stock purchases', () => {
       .mockResolvedValueOnce(created())
       .mockResolvedValueOnce(Response.json({ ok: true, order_id: 92, status: 'paid' }))
       .mockResolvedValueOnce(delivered('PROC-ALPHA001\nPROC-BETA0002'))
+      // The two calls below run concurrently and both need a response. One-shot
+      // responses starve whichever loses the race, which then writes retry_pending
+      // and races the winner's state='received' — that is what made this file flaky.
+      .mockResolvedValue(delivered('PROC-ALPHA001\nPROC-BETA0002'))
     vi.stubGlobal('fetch', fetcher)
     await syncStockPurchase()
     await immediately(id)
