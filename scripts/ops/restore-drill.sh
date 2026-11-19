@@ -127,6 +127,7 @@ case "$PROBE_STATUS" in
      exit 5 ;;
   1) fail "credential probe: ENCRYPTION_KEY cannot open ciphertext in this backup (wrong key, or rotated after these rows were written)" ;;
   4) fail "credential probe: ENCRYPTION_KEY was not provided to the drill — export it, never bake it into the script" ;;
+  6) fail "credential probe: ENCRYPTION_KEY_FILE is unsafe (symlink, not a regular file, or readable by group/other) — chmod 600 it" ;;
   *) fail "credential probe could not run (status ${PROBE_STATUS}): this is NOT a key problem — check image pull, network and database reachability" ;;
 esac
 

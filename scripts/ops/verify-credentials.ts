@@ -23,7 +23,8 @@
 //   3 nothing to probe (no inventory rows — cannot prove anything)
 //   4 ENCRYPTION_KEY not provided to the probe
 //   5 probe infrastructure error (database unreachable, bad query) — NOT a key problem
-import { readFile } from 'node:fs/promises'
+//   6 key file is unsafe: symlink, not a regular file, or readable by group/other
+import { lstat, readFile } from 'node:fs/promises'
 import { db } from '../../src/server/db'
 import { openCredential } from '../../src/server/credential-storage'
 
@@ -34,12 +35,29 @@ const extraCount = Number.isFinite(extra) && extra > 1 ? Math.floor(extra) - 2 :
 
 // A deployment may legitimately keep the key in a file instead of an env var:
 // demo/dev uses .data/encryption.key (32 raw bytes), and ops can point at a
-// mounted secret. Accept both, but never invent a key.
+// mounted secret. Accept both, but never invent a key, and never trust a key
+// file that anyone else on the host can read.
 async function resolveKey(): Promise<string | null> {
   const fromEnv = process.env.ENCRYPTION_KEY?.trim()
   if (fromEnv) return fromEnv
   const file = process.env.ENCRYPTION_KEY_FILE?.trim()
   if (!file) return null
+
+  const stat = await lstat(file)
+  if (stat.isSymbolicLink()) {
+    console.error(`key file ${file} is a symlink: point at the real file so its permissions are the ones checked`)
+    process.exit(6)
+  }
+  if (!stat.isFile()) {
+    console.error(`key file ${file} is not a regular file`)
+    process.exit(6)
+  }
+  if ((stat.mode & 0o077) !== 0) {
+    console.error(`key file ${file} is readable by group/other (mode ${(stat.mode & 0o777).toString(8)})`)
+    console.error('chmod 600 (or 400) it — a world-readable key file is the same as printing the key')
+    process.exit(6)
+  }
+
   const buf = await readFile(file)
   const text = buf.toString('utf8').trim()
   if (/^[0-9a-f]{64}$/i.test(text)) return text
