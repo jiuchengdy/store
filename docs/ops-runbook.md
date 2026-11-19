@@ -47,7 +47,12 @@ docker compose -f compose.prod.yaml ps
 现状：没有 migration 工具，`db:init` 拒绝非空库。所以按下面顺序，**四步一步都不能跳**：
 
 1. **改** `prisma/schema.prisma`（只加不删、只放宽不收紧：加列、加表、加可空字段）。
-2. **同步** `prisma/database-contract.json`（`db:verify` 是精确比对，不同步它，部署门禁会红，新人会误判成「迁移失败」去回滚——那才是真事故）。
+2. **同步契约**，别手改：
+   ```sh
+   DATABASE_URL=... bun scripts/ops/gen-contract.ts          # 重写 prisma/database-contract.json
+   DATABASE_URL=... bun scripts/ops/gen-contract.ts --check  # 只检查，stale 则退出 1
+   ```
+   `db:verify` 是精确比对，契约不同步部署门禁就会红，新人会误判成「迁移失败」去回滚——那才是真事故。已实测：干净的库上 `--check` 与仓库里的契约**逐字节一致**；给 `users` 加一列后立刻 `Contract is stale` + 退出 1。契约要和 SQL 放进同一个提交。
 3. **执行**增量 SQL（放 `prisma/updates/`，文件名带序号与日期），在**备份之后**、在维护窗口内执行：
    ```sh
    docker exec -i <postgres-container> psql -U getgpt -d getgpt -v ON_ERROR_STOP=1 < prisma/updates/00X_xxx.sql
@@ -73,6 +78,8 @@ DB_CONTAINER=<postgres-container> BACKUP_DIR=/var/backups/getcodex \
 RETENTION_DAYS=7 REMOTE=ops@192.168.0.1:/srv/store-backups \
   sh scripts/ops/backup-db.sh
 ```
+
+`DB_CONTAINER` 默认是 `store-postgres-1`（生产 compose 服务名）。**本地开发库要显式传 `DB_CONTAINER=store-db-1`**，否则脚本直接以 `container ... is not running` 退出——不是脚本坏了，是容器名不同。
 
 crontab：
 
@@ -113,6 +120,8 @@ drill: FAILED: pg_restore reported errors                          → 退出码
 ```
 
 `DRILL_TOLERANCE`（默认 0）只给写入非常频繁的站点留余量；**默认值下差一行就 FAIL**。临时库无论成败都会删除，不留残留。
+
+**首周看到 `expected=N restored=N-1` 先别慌**：先确认那一刻是不是正好有下单在写。`expected` 是 dump 之后几秒取的数，备份本身是事务快照，两者差一行属于正常竞态，重跑一次通常就对齐了。真正的坏备份不会只差一行。
 
 若宿主机没装 bun，改用镜像里的验证器：设置 `APP_IMAGE=<镜像>@sha256:<digest>` 与 `DRILL_NETWORK=<compose 网络>`，`db:verify` 会在一次性容器里跑。
 
