@@ -132,6 +132,95 @@ AICDK=$(q "select count(*) from integrations where provider='aicdk' and active;"
 [ "$AICDK" = "1" ] && pass "AICDK 已启用（注意：无公开文档，幂等/留存必须按附录 §8 实测）" \
                     || skip "AICDK 未启用（纯卡密库存模式）"
 
+echo "== 3.5 回调域名的公网可解析性（GMPay 建单 10041 的唯一成因）=="
+# 上游 url_guard.go 的口径：notify_url 仅允许 http/https；host 不得是 localhost
+# 或私网/回环/链路本地 IP；域名必须在**下单那一刻**解析成功，且所有结果都是公网
+# 地址（超时 3 秒即拒）。我们的 notify_url 由 APP_URL 拼出，所以验 APP_URL 即可。
+# 代理商拿内网域名或裸私网 IP 自托管时，建单 100% 报 400/10041，钱根本收不进来。
+is_public_v4() {
+  local a b
+  IFS=. read -r a b _ <<EOF
+$1
+EOF
+  [ "$a" = "10" ] && return 1
+  [ "$a" = "127" ] && return 1
+  [ "$a" = "0" ] && return 1
+  [ "$a" = "169" ] && [ "$b" = "254" ] && return 1
+  [ "$a" = "192" ] && [ "$b" = "168" ] && return 1
+  [ "$a" = "172" ] && [ "$b" -ge 16 ] && [ "$b" -le 31 ] && return 1
+  [ "$a" = "100" ] && [ "$b" -ge 64 ] && [ "$b" -le 127 ] && return 1
+  [ "$a" -ge 224 ] && return 1
+  return 0
+}
+APP_URL_VAL="${APP_URL:-}"
+if [ -z "$APP_URL_VAL" ] && [ -f .env ]; then
+  APP_URL_VAL=$(grep -E '^APP_URL=' .env | head -1 | cut -d= -f2-)
+fi
+APP_URL_VAL="${APP_URL_VAL%\"}"; APP_URL_VAL="${APP_URL_VAL#\"}"; APP_URL_VAL="${APP_URL_VAL%\'}"; APP_URL_VAL="${APP_URL_VAL#\'}"
+# 严重度取决于「现在是否真的要收钱」：未启用任何支付集成、也不是 live 的
+# demo/纯库存站，localhost 回调不会造成损失；转 live 或启用了收款就必须是 FAIL。
+# 否则本地开发默认 .env 一跑 preflight 就整体 FAILED，这个检查会被当成噪音关掉。
+STRICT35=0
+if [ "${APP_MODE:-}" = "live" ]; then STRICT35=1; fi
+case "$ACTIVE" in *gmpay*|*xorpay*|*epay*) STRICT35=1 ;; esac
+p3fail() {
+  if [ "$STRICT35" = "1" ]; then fail "$1"
+  else warn "$1（当前未启用收款：demo/纯库存站暂不阻塞，转 live 前必须修）"; fi
+}
+if [ -z "$APP_URL_VAL" ]; then
+  if [ "$ACTIVE" = "gmpay" ] || [ "${ACTIVE#*gmpay}" != "$ACTIVE" ]; then
+    fail "APP_URL 未设置：默认落到 http://localhost:3000，网关一定回 400/10041，建单必失败"
+  else warn "APP_URL 未设置（未启用 GMPay 时可暂不处理；转 live 前必须填公网 https）"; fi
+else
+  case "$APP_URL_VAL" in
+    https://*) pass "APP_URL = ${APP_URL_VAL}（https）" ;;
+    http://*) if [ "$DEPLOY" = "container" ] || [ "${APP_MODE:-}" = "live" ]; then
+                fail "APP_URL 是 http：live 模式启动即拒绝（config.ts 要求 https）"
+              else warn "APP_URL 是 http：demo 可用，转 live 前必须换 https"; fi ;;
+    *) p3fail "APP_URL 不是 http/https 形态：${APP_URL_VAL}" ;;
+  esac
+  HOSTPORT="${APP_URL_VAL#*://}"
+  HOST="${HOSTPORT%%/*}"
+  HOST="${HOST%%:*}"
+  HOST=$(printf '%s' "$HOST" | tr 'A-Z' 'a-z')
+  case "$HOST" in
+    ""|localhost|*.localhost|*.local|*.internal)
+      p3fail "回调 host = ${HOST:-空}：上游 url_guard 直接拒（localhost/内网域名），建单必 400/10041" ;;
+    *)
+      if printf '%s' "$HOST" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$'; then
+        if is_public_v4 "$HOST"; then
+          warn "回调 host 是裸公网 IP ${HOST}：上游放行，但换 IP 即失效，建议用域名"
+        else
+          p3fail "回调 host = ${HOST} 是私网/回环 IP：上游 url_guard 直接拒，建单必 400/10041"
+        fi
+      else
+        RESOLVED=$( (getent hosts "$HOST" 2>/dev/null | awk '{print $1}') || true )
+        [ -z "$RESOLVED" ] && RESOLVED=$( (dig +short "$HOST" A 2>/dev/null; dig +short "$HOST" AAAA 2>/dev/null) | grep -v '\.$' || true )
+        RESOLVED=$(printf '%s\n' "$RESOLVED" | sed '/^$/d' | sort -u)
+        if [ -z "$RESOLVED" ]; then
+          p3fail "回调 host = ${HOST} 解析不到任何地址：网关在下单那一刻会回 400/10041（保留 TLD 如 .test/.invalid 也不解析）"
+        else
+          BAD=""
+          while IFS= read -r IP; do
+            case "$IP" in
+              *:*) case "$IP" in ::1|fc*|fd*|fe80*|fe8*|fe9*|fea*|feb*) BAD="$BAD $IP" ;; esac ;;
+              *) if printf '%s' "$IP" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$'; then
+                   is_public_v4 "$IP" || BAD="$BAD $IP"
+                 fi ;;
+            esac
+          done <<EOF
+$RESOLVED
+EOF
+          if [ -n "$BAD" ]; then
+            p3fail "回调 host = ${HOST} 解析到内网地址（${BAD# }）：上游 url_guard 要求全部结果是公网地址，建单必 400/10041"
+          else
+            pass "回调 host = ${HOST} 解析到公网地址（$(printf '%s' "$RESOLVED" | tr '\n' ' ')）"
+          fi
+        fi
+      fi ;;
+  esac
+fi
+
 echo "== 4. 品牌残留（代理商自托管场景）=="
 if command -v grep >/dev/null && [ -d src ]; then
   HITS=$(grep -rn 'GetCodex' src --include=*.ts --include=*.tsx 2>/dev/null | grep -vc '\.test\.' || true)

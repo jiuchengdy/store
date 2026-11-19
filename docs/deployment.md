@@ -160,6 +160,8 @@ bun run build
 >
 > 该字段为空时不会被静默隐藏——页脚不渲染「联系支持」，而 `/help/payment`、`/guide`、套餐页会显示「支持联系方式尚未公布……请先暂停购买」，**等于上线即劝退买家**。转 live 前必须核对（见下节自检）。
 
+> **`APP_URL` 同时决定支付回调的域名，填错会直接导致建单失败。** 回调地址由 `<APP_URL>/api/payments/notify/<provider>/<configId>` 拼出。EPUSDT v2 网关在下单那一刻就解析这个域名（上游 `url_guard.go`）：只接受 http/https，`localhost`、`.local`/`.internal`、私网/回环/链路本地 IP 一律拒绝，且解析结果必须**全部**是公网地址（超时 3 秒即拒）。用内网域名、保留 TLD（`.test`/`.invalid`）、或还没解析好的新域名，都会得到 `400 / 10041 invalid notify url`，症状是「付款页打不开」，很容易被误判成代理或网关没配好。另外 `APP_MODE=live` 强制 `https://`，http 会在启动时直接拒（`config.ts`）。用 `scripts/ops/deployer-preflight.sh` 第 3.5 节可当场判（解析 + 公网/私网分类）。
+
 
 ## 上线验证与运行维护
 
