@@ -5,17 +5,31 @@
 // (AES-256-GCM via credential-storage.ts), so a lost or rotated key gives you
 // a perfect-looking backup whose entire stock is scrap.
 //
-// This opens a few real records and prints only counts — never plaintext.
+// It always probes TWO records, not a random sample:
+//   oldest — proves historical data is still readable (a rotated key leaves old
+//            ciphertext behind while new writes use the new key)
+//   newest — proves the key this process holds matches the current write path
+// Sampling only the newest reports PASS while every older code is unreadable,
+// which is exactly the false green this probe exists to prevent.
 //
-//   bun scripts/ops/verify-credentials.ts          # probe 1 row (PROBE_ROWS to change)
+// Plaintext is never printed — only ids, roles and counts.
 //
-// Exit codes: 0 all probed credentials decrypted, 1 decryption failed,
-//             3 nothing to probe (cannot prove anything), 4 ENCRYPTION_KEY missing.
+//   bun scripts/ops/verify-credentials.ts
+//   PROBE_ROWS=5 bun scripts/ops/verify-credentials.ts   # oldest, newest, plus 3 more
+//
+// Exit codes:
+//   0 all probed credentials decrypted
+//   1 key mismatch: ENCRYPTION_KEY cannot open ciphertext that is in this backup
+//   3 nothing to probe (no inventory rows — cannot prove anything)
+//   4 ENCRYPTION_KEY not provided to the probe
+//   5 probe infrastructure error (database unreachable, bad query) — NOT a key problem
 import { db } from '../../src/server/db'
 import { openCredential } from '../../src/server/credential-storage'
 
-const rows = Number(process.env.PROBE_ROWS ?? '1')
-const limit = Number.isFinite(rows) && rows > 0 ? Math.floor(rows) : 1
+type Probe = { role: string; id: string; code: string }
+
+const extra = Number(process.env.PROBE_ROWS ?? '1')
+const extraCount = Number.isFinite(extra) && extra > 1 ? Math.floor(extra) - 2 : 0
 
 if (!process.env.ENCRYPTION_KEY) {
   console.error('ENCRYPTION_KEY is not set: a probe without the real key would use a throwaway one')
@@ -23,36 +37,60 @@ if (!process.env.ENCRYPTION_KEY) {
   process.exit(4)
 }
 
-try {
-  const sample = await db.inventory.findMany({
-    select: { id: true, code: true },
-    take: limit,
-    orderBy: { createdAt: 'desc' },
-  })
+const select = { id: true, code: true } as const
 
-  if (sample.length === 0) {
+try {
+  const [oldest, newest] = await Promise.all([
+    db.inventory.findFirst({ select, orderBy: [{ createdAt: 'asc' }, { id: 'asc' }] }),
+    db.inventory.findFirst({ select, orderBy: [{ createdAt: 'desc' }, { id: 'desc' }] }),
+  ])
+
+  if (!oldest || !newest) {
     console.log('credential probe: SKIPPED (no inventory rows to open — nothing proven)')
     process.exit(3)
   }
 
-  let ok = 0
-  const failures: string[] = []
-  for (const item of sample) {
-    try {
-      const value = openCredential(item.code, 'inventory', item.id)
-      if (!value.trim()) throw new Error('empty plaintext')
-      ok += 1
-    } catch (error) {
-      failures.push(`${item.id}: ${(error as Error).message}`)
+  const probes: Probe[] = [
+    { role: 'oldest', ...oldest },
+    { role: 'newest', ...newest },
+  ]
+
+  if (extraCount > 0) {
+    const middle = await db.inventory.findMany({
+      select,
+      orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+      take: extraCount + 2,
+    })
+    for (const item of middle) {
+      if (probes.some((p) => p.id === item.id)) continue
+      probes.push({ role: 'extra', ...item })
     }
   }
 
-  console.log(`credential probe: ok=${ok} fail=${failures.length} probed=${sample.length}`)
+  let ok = 0
+  const failures: string[] = []
+  for (const probe of probes) {
+    try {
+      const value = openCredential(probe.code, 'inventory', probe.id)
+      if (!value.trim()) throw new Error('empty plaintext')
+      ok += 1
+    } catch (error) {
+      failures.push(`${probe.role} ${probe.id}: ${(error as Error).message}`)
+    }
+  }
+
+  console.log(
+    `credential probe: ok=${ok} fail=${failures.length} probed=${probes.length} roles=${probes.map((p) => p.role).join('+')}`,
+  )
   if (failures.length) {
     for (const line of failures) console.error('  undecryptable', line)
-    console.error('ENCRYPTION_KEY in this environment cannot open this backup')
+    console.error('ENCRYPTION_KEY in this environment cannot open ciphertext stored in this backup')
     process.exit(1)
   }
+} catch (error) {
+  const err = error as Error
+  console.error(`credential probe could not run (${err.name || 'Error'}): ${err.message || 'see log above'}`)
+  process.exit(5)
 } finally {
   await db.$disconnect()
 }

@@ -125,7 +125,9 @@ case "$PROBE_STATUS" in
   3) log "credentials unproven: no inventory rows in this backup — nothing was decrypted"
      log "RESULT=UNPROVEN $(basename "$DUMP_PATH") restored and counted, but the key was never exercised"
      exit 5 ;;
-  *) fail "credential probe failed (status ${PROBE_STATUS}): ENCRYPTION_KEY cannot open this backup" ;;
+  1) fail "credential probe: ENCRYPTION_KEY cannot open ciphertext in this backup (wrong key, or rotated after these rows were written)" ;;
+  4) fail "credential probe: ENCRYPTION_KEY was not provided to the drill — export it, never bake it into the script" ;;
+  *) fail "credential probe could not run (status ${PROBE_STATUS}): this is NOT a key problem — check image pull, network and database reachability" ;;
 esac
 
 log "PASS $(basename "$DUMP_PATH") restored, structure verified, row counts match, credentials decrypt"
