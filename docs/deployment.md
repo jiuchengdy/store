@@ -25,6 +25,11 @@ chmod 600 .env
 | `OPAQUE_SERVER_KEY`  | OPAQUE server setup；也可使用 `OPAQUE_SERVER_KEY_FILE`                        |
 | `POSTGRES_PASSWORD`  | 使用内置数据库时必填，建议用随机十六进制值避免连接串转义问题                  |
 | `DATABASE_URL`       | 外部数据库或直接运行 Bun 时必填；使用内置数据库时删除示例中的本地连接串       |
+| `PORT`               | 仅 `compose.prod.yaml` 使用：**宿主机**映射端口，默认 `3000`。容器内固定监听 `3000`，改这里不会改容器内端口 |
+| `BIND_ADDRESS`       | 仅 `compose.prod.yaml` 使用：宿主机监听地址，默认 `127.0.0.1`（前面有网关时保持默认，直接对外才改） |
+
+**关于 `ENCRYPTION_KEY` 的一个易错点**：`APP_MODE=live` 且未设置 `ENCRYPTION_KEY` 时会直接启动失败（不会自生成），这是有意的。只有在 demo/开发模式下、且未设置该变量时，系统才会把密钥生成到 `.data/encryption.key`。**所以「密钥在哪里」要先看运行模式**：生产在 `.env`，开发可能在 `.data/encryption.key`。备份时必须确认备份的是**正在生效的那一把**，并且与数据库 dump 分开存放。
+
 
 分别执行两次以下命令，为 `ENCRYPTION_KEY` 和 `BETTER_AUTH_SECRET` 生成不同的值；数据库密码另行生成：
 
