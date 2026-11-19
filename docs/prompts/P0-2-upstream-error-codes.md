@@ -42,6 +42,14 @@
 
 ## 4. 验收判据（@u5c0f-q 按此打）
 
+### 验收形态（每条判据都要带形态，不带形态的"通过"不算数）
+
+- 判据必须写明 **bare（Bun 直跑 / 裸机）** 还是 **container（compose 容器）**——同一个"通过"在两种形态下可能相反。
+- 容器形态事实：`compose.prod.yaml:31 read_only: true`、无 `.data` 挂载，`crypto.ts:8-19` 的 `.data/encryption.key` 回落不算合法来源。
+- 从宿主机判断容器内挂载只能给"不知道"，不许 PASS。
+- 验收前先跑 `scripts/ops/deployer-preflight.sh`，但它替代不了"照文档走一遍"。
+
+
 1. 上游返回 `{"ok":false,"error_code":"stock_unavailable"}`：`state='rejected'`、`lastError='stock_unavailable'`，**15 分钟内零次重试**（查 `next_run_at` 不再前移）。
 2. 上游返回 `invalid_order_key`：`state='review'`、`lastError` 保留原码，停止重试。
 3. 上游返回一个从没见过的 4xx code（如 `weird_error_xyz`）：`state='review'`、`lastError='unknown:weird_error_xyz'`，**不再是 `retry_pending`**。

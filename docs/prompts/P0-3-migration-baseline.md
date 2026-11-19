@@ -56,6 +56,14 @@
 
 ## 5. 验收判据（@u5c0f-q 按此打，实现者不参与验收）
 
+### 验收形态（本单判据天生跨形态，必须逐条标注）
+
+- 迁移与 `db:migrate` 都在**数据库容器内**执行；`db:verify` / `gen-contract` 可能在宿主机跑。每条判据要写清执行位置（宿主机 / 容器内 / 通过 `docker exec`）。
+- 涉及卷与只读性的判据：`compose.prod.yaml:31 read_only: true`，容器内除 `/tmp` 与 `/app/.next/cache` 外不可写——迁移脚本不要往工作目录写临时文件。
+- 从宿主机判断"容器内路径是否在 volume 里"不可判定，只能输出"不知道"。
+- 验收前先跑 `scripts/ops/deployer-preflight.sh`（已知清单），但它替代不了"照文档走一遍"。
+
+
 1. 空库从零跑完所有编号 SQL → `db:verify` 绿 **且** `gen-contract --check` 绿（两个都绿才算）。
 2. 有数据的库跑增量 → 目标表行数前后不变、抽样数据一致。
 3. 同一迁移重复执行 → 不报错、`schema_version` 不重复记账（幂等）。

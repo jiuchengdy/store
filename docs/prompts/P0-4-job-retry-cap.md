@@ -44,6 +44,13 @@
 
 ## 4. 验收判据（@u5c0f-q 按此打）
 
+### 验收形态
+
+- 出货 worker 在**容器内**运行（compose 里 `worker` 服务），判据要写清是容器内跑还是宿主机直跑。
+- 容器只读根文件系统（`compose.prod.yaml:31`），本单不写盘，若实现里引了临时文件写入必须改掉。
+- 验收前先跑 `scripts/ops/deployer-preflight.sh`，但它替代不了"照文档走一遍"。
+
+
 1. 造一个永远失败的上游（mock 抛永久性错误）：连续 tick 到第 20 次后，订单 `status='failed'`、`failureReason='fulfillment_retry_exhausted'`、job `done=true`。
 2. 第 21 次 tick：该单**不再被领取**（零次上游请求），订单状态不变。
 3. 转 `failed` 的同一个事务里，`email_outbox` 出现一条 `status='failed'` 的记录（触发器生效），且**只有一条**（再 tick 一次仍只有一条）。

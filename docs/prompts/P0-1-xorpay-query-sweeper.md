@@ -71,6 +71,14 @@ XorPay 查询：`GET https://xorpay.com/api/query/{aoid}`，**无需签名/密�
 
 ## 5. 验收判据（@u5c0f-q 会照这些打，写单的人不参与验收）
 
+### 验收形态（每条判据都要带形态，不带形态的"通过"不算数）
+
+- 判据必须写明是在 **bare（Bun 直跑 / 裸机）** 还是 **container（compose 容器）** 下执行——同一个"密钥存在"，裸机是 PASS、容器可能是 FAIL。
+- 容器形态的事实依据：`compose.prod.yaml:31 read_only: true`，且 compose 里**没有 `.data` 挂载**。所以 `crypto.ts:8-19` 的 `.data/encryption.key` 回落路径在容器里不是合法来源（写不进；即使打进镜像，换镜像即消失，那批密文全废）。
+- 从宿主机判断"容器内路径是否在 volume 里"不可判定，只能输出"不知道"，不许给 PASS。
+- 验收前先跑 `scripts/ops/deployer-preflight.sh`（覆盖已知清单），但**它替代不了"有人照文档真走一遍"**——脚本只验它想到的东西。
+
+
 1. `payed` 与 `success` 两态都能补入账，且 `payment_events` 只多一条。
 2. 同一 `aoid` 被回调与 sweeper 同时处理：`payment_events` 恰好一条，订单状态只前进一次，**日志里没有红色报错**（409 被吞）。
 3. `pay_price` 与订单金额不一致：不入账、落告警。
