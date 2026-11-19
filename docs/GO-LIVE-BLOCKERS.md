@@ -6,11 +6,15 @@
 
 ## 一、上线阻塞（P0，做完才准上线）
 
-**0. GMPay 实现分叉（挂起，等用户注册新号回报）** — 用户决定自行注册支付新号（不依赖原作者），注册后回报商户域名/平台类型即可。@u5c0f-i 用两条 curl 30 秒判定，**不用翻后台/登录**：
    - `GET /pay/check-status/x`：Epusdt 回 200/`status_code:10008`，gmpay-edge 回 404；
    - `GET /payments/gmpay/v1/order/query`：Epusdt 404，edge 401（缺签名）。
    判定后：**Epusdt** 改 URL + 重写响应结构（只回 `{trade_id,status}`，现代码期望的 currency/amount/order_id 全无）；**edge** 维持现状。
    证据（@u5c0f-i 核实 + @u5c0f-q 复读代码确认）：`confirmGmpayReceipt` 请求 `order/query`（`payments.ts:236`），挂在主回调路径（`route.ts:43`），接 Epusdt 时每笔回调 404 → `ApiError(503)` → 厂商重试耗尽 → **GMPay 全部收入进不了账**。mock 测不出这个 404，沙箱真发一笔。
+   - **P0-A 下单 100% 失败**：`services.ts:344` 生成 `o_`+32hex = **34 字符**，超网关 `maxLen:32` → `400/10009`；同参数 32 字符 → `200`。现有测试夹具用 `orderId:'tx'`（2 字符），正好绕过长度限制，所以一直绿。修法：`o_`+30 位 = 32 字符，确定性幂等不变，与历史 34 字符订单并存无需迁移。
+   - **P0-B 查单路由不存在**：`/payments/gmpay/v1/order/query` **GET/POST 均 404**（v2.0.0 `router.go` 只注册 `create-transaction` 与 `config`）；真路由 `GET /pay/check-status/{trade_id}` 只回 `{trade_id,status}`，现有四重比对（currency/order_id/amount）必挂 → 判据改为 `status==2`，金额交叉核用 `GET /pay/checkout-counter-resp/{trade_id}`。
+   - **10002 不可恢复（新）**：网关按 `order_id` 全局查重（`order_service.go:139-145`），且**没有按 order_id 反查 trade_id 的接口** → POST 已建单但响应丢失时，重试只拿 10002，支付地址永久丢。修法：建单超时不盲目重建、`paymentId` 先落库、10002 单独处置文案。
+   - **10041 是 DNS 不是黑名单（新，更正队友归因）**：网关下单时对 `notify_url` 的 host 实时解析并要求公网 IP（`url_guard.go`）。同参数对照：`example.com`→200、`example.test`/`.invalid`（不解析）/`192.168.0.1`（私网）→10041。**生产填真实域名不受影响，代码不用改；但代理商裸 IP/内网域名自托管会 100% 建单失败 → 进 `deployer-preflight.sh`。**
+   - **签名为兼容项，不要顺手动**：HMAC-SHA256 + ASCII 排序 + 排除 `signature`/空值，与 `signatures.ts` 一致（实测正确签名换到 `10004` 而非 `401`）；回调 `status=2` 判成功、回 `ok` 亦一致。
 
 1. **XorPay 主动查询兜底（sweeper）+ 能力矩阵** — 实现 @u5c0f-r，**验收 @u5c0f-q**。任务单 `docs/prompts/P0-1-xorpay-query-sweeper.md` + 附录 `APPENDIX-payment-status-mapping.md`（7 个统一语义，渠道差异压映射层，厂商原始状态不外报）。
    判据：`status ∈ {payed, success}` 且金额一致才补入账；`fee_error` 落人工；复用 `acceptPayment`，`(provider, transactionId)` 唯一键防双记。
@@ -48,12 +52,10 @@
 
 ## 四、需要用户本人拍板（我们无法自造/自定）
 
-1. **GMPay 商户域名** → 挂起，用户自行注册新号、注册后回报（后台域名或平台类型即可，@u5c0f-i 脚本自动判定）。
 2. ~~USDT 留不留~~ → **已定：保留**（含推广提现）。按"高人工成本渠道"单独定价限流；退款口径见第 4 项（已定）。
 4. ~~加密货币退款汇率差口径~~ → **已定（2026-11-19）：按币退——实收数量原数退回，汇率波动由买家承担。** 落地要点（@u5c0f-r 审计补充）：`orders` 表只有 `refundNote` / `refundResolutionNote` 两个字符串字段，**没有币种/数量/链/txid**；而"实收数量"只存在于商户后台，我们库里只有人民币分。所以按币退款完成时必须把**币种、实收数量、链、交易哈希**四项写进 `refundResolutionNote`，否则事后无法举证、无法与链上对账（结构化字段属 backlog，等 P0#3 之后加 `refundCrypto jsonb`）。
 5. **异地备份目标** `192.168.0.1` 行不行 + **加密私钥谁保管** + **`ENCRYPTION_KEY` 离线第二份放哪**（绝不能与 dump 同机）。
 6. **push 时机**：当前 **47 个**本地提交未上图，等你点头统一 push。
-7. **上线外部资源**：域名+HTTPS、服务器（未回）；~~邮件服务~~ Resend 已有账号（API Key+发件地址上线前用户自行填后台）；~~支付/上游~~ 用户自行注册新号（不依赖原作者）。
 8. **`APP_MODE` demo→live 时点**。
 9. **AICDK 对接文档 + 沙箱/测试额度 + Session 留存政策书面答复**（@u5c0f-i，排前三）——没有它，兑换链路一次真实验证都做不了；AICDK 拿的是买家 Session/accessToken（系统里最敏感的数据），却**没有公开文档**。上线前必须在对方环境实测五条（附录 §8）：同键连发不重复、uncertain 重试不二次兑换、超时语义、account-session 取回上限、被拒是否消耗卡密。**用户自注册新号，新号到位后先做 §8 五条实验**（无真实订单时试错不要钱，上量后试错就是赔单）。
 10. **真出事时多久内通知买家**（@u5c0f-d，上线前必须定）：行业惯例发现后尽快、72 小时内书面说明；定错无法事后补救。
@@ -71,4 +73,4 @@
 - **排期（改表类 P0）**：P0#3（最小迁移账本）→ P0#4（job 上限 + 两封信）→ P0#1 → P0#2；P0#5 已完成只等 REMOTE+加密。一个 Codex 轮次别同时改触发器 + 契约 + 业务逻辑。
 - **「原路退款」→「退回原支付方式」统一口径**（@u5c0f-d 定）：GMPay 厂商**没有退款接口**，「原路退」是技术上做不到的承诺，必须从对外话术删掉（`src` 现 16 处「原路」、9 处买家/客服可见，待 @u5c0f-r 按 `refund-copy-fix.md` 改，grep `原路` 归零）；`services.ts`/`refunds.ts` 内部审计措辞不改（保持历史对账一致）。
 - **验收元规矩（团队确立）**：每条断言必须写「验什么对象、什么形态、失败长什么样」三段，缺一段不算判据——本轮六次踩同一坑（空壳 dump、只抽最新、`.env` 备份不到钥匙、`.data` 容器不合法、0644 钥匙、宿主机读容器挂载），根因都是「检查对象 ≠ 生效对象」。
-- 下一步：等用户回 GMPay 域名（P0#0）+ 定谁落地（@u5c0f-r 自己写还是给 Codex），任务单已可直接扔给 Codex。
+- 下一步：GMPay 外部资源已闭环（域名/钱包/密钥全部到位），**只剩代码修复**——P0#0 三处实测缺陷（订单号 34>32、`order/query` 404、10002 不可恢复）+ 10041 进 preflight；任务单由 @u5c0f-r 写、@u5c0f-q 验，写好后可直接扔给 Codex。**在修好并实测通过前，后台 `gmpay` 集成保持 disabled。**
