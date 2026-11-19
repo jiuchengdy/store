@@ -72,7 +72,7 @@ XorPay 查询：`GET https://xorpay.com/api/query/{aoid}`，**无需签名/密�
 
 ## 5. 验收判据（@u5c0f-q 会照这些打，写单的人不参与验收）
 
-### 验收形态（每条判据都要带形态，不带形态的"通过"不算数）
+### 验收形态（每条判据四段齐全才算判据：**验什么对象 · 什么形态 · 失败长什么样 · 在哪个数字上算通过**）
 
 - 判据必须写明是在 **bare（Bun 直跑 / 裸机）** 还是 **container（compose 容器）** 下执行——同一个"密钥存在"，裸机是 PASS、容器可能是 FAIL。
 - 容器形态的事实依据：`compose.prod.yaml:31 read_only: true`，且 compose 里**没有 `.data` 挂载**。所以 `crypto.ts:8-19` 的 `.data/encryption.key` 回落路径在容器里不是合法来源（写不进；即使打进镜像，换镜像即消失，那批密文全废）。

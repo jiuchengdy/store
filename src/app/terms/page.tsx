@@ -3,7 +3,7 @@ import { refundSummary } from '../../product-copy'
 import { Support } from '../../components/Support'
 export const metadata = pageMetadata(
   '服务说明｜交付、取消与退款',
-  '了解 GetCodex Plus 独立充值服务的购买条件、交付确认、订单取消、原路退款、钱包退款及邀请返现规则。',
+  '了解 GetCodex Plus 独立充值服务的购买条件、交付确认、订单取消、退款去向、钱包退款及邀请返现规则。',
   '/terms',
 )
 export default function Terms() {

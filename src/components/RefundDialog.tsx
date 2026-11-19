@@ -80,7 +80,7 @@ export function RefundDialog({
       if (reserveManual) setNote('')
       await onRefresh()
       if (result.refunded) {
-        message.success(original ? '原路退款已完成，记录已保存' : '订单金额已退回站内余额')
+        message.success(original ? '已退回原支付方式，记录已保存' : '订单金额已退回站内余额')
         onClose()
       }
     } catch (e) {
@@ -92,7 +92,7 @@ export function RefundDialog({
   }
   return (
     <Modal
-      title={completed ? '退款记录' : reconcile ? '核实原路退款' : '处理退款'}
+      title={completed ? '退款记录' : reconcile ? '核实原支付方式退款' : '处理退款'}
       open
       width={600}
       onCancel={busy ? undefined : onClose}
@@ -175,10 +175,12 @@ export function RefundDialog({
               value="original"
               disabled={busy || started || completed || order.externalAmount === 0}
             >
-              <strong>原路退回</strong>
+              <strong>退回原支付方式</strong>
               <span className="refund-choice-help">
                 {order.externalAmount > 0
-                  ? '渠道款退原支付渠道，余额抵扣退钱包'
+                  ? order.channel === 'crypto'
+                    ? '加密货币由支持人员人工转回同一链、同一地址，按实收数量原数退回；完成时须登记币种、数量、链与 txid'
+                    : '渠道款退回原支付方式，余额抵扣退钱包'
                   : '纯余额订单无渠道款可退'}
               </span>
             </Radio>

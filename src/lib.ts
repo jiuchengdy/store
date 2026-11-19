@@ -29,7 +29,7 @@ export function orderStatusLabel(order: Order) {
       : { text: '退款处理中', color: 'processing' }
   if (order.status === 'refunded')
     return {
-      text: order.refund?.destination === 'original' ? '已原路退款' : '已退回钱包',
+      text: order.refund?.destination === 'original' ? '已退款' : '已退回钱包',
       color: 'default',
     }
   return statuses[order.status]

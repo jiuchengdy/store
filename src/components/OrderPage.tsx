@@ -211,7 +211,7 @@ function OrderContent({ id }: { id: string }) {
     completed: order.kind === 'topup' ? '充值余额已到账。' : '充值完成，开始使用吧。',
     needs_session: '需要更新账号信息，继续原订单。',
     failed: '这笔订单需要进一步处理。',
-    refunded: originalRefund ? '原路退款已完成。' : '订单金额已退回本站钱包。',
+    refunded: originalRefund ? '已退回原支付方式。' : '订单金额已退回本站钱包。',
   }
   const safeUrl =
     payment?.paymentUrl && /^(https?:|alipays:|weixin:)/i.test(payment.paymentUrl)
@@ -252,7 +252,7 @@ function OrderContent({ id }: { id: string }) {
           className="mb-24"
           showIcon
           type="info"
-          title="原路退款正在处理"
+          title="退款正在处理"
           description="渠道退款结果仍在确认中，请保留原订单；确认完成后会更新退款状态。"
         />
       )}

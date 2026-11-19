@@ -1,5 +1,5 @@
 export const refundSummary =
-  '已确认充值失败的订单，经核实后可原路退款或退回本站钱包。余额抵扣部分退回钱包；涉及钱包退款的游客需先用联系邮箱登录认领订单。原路退款由支持人员处理，具体进度以订单记录为准。'
+  '已确认充值失败的订单，经核实后可退回原支付方式或退回本站钱包。余额抵扣部分退回钱包；涉及钱包退款的游客需先用联系邮箱登录认领订单。退款均由支持人员处理，具体进度以订单记录为准。'
 
 // Editorial buying guidance, not promises about model access or usage limits.
 export const planBuyingAdvice: Record<string, { audience: string; consideration: string }> = {

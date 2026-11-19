@@ -112,7 +112,7 @@ suite('persistent original-payment refunds', () => {
       refundStatus: 'completed',
       refundAutomatic: true,
     })
-    expect(orderStatusLabel(orderView(current)).text).toBe('已原路退款')
+    expect(orderStatusLabel(orderView(current)).text).toBe('已退款')
   })
 
   it.each(['gmpay', 'epay_v1', 'epay_v2'] as const)(
