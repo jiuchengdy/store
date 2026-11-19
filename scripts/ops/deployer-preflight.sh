@@ -64,6 +64,8 @@ case "$KEY_SRC" in
   keyfile) pass "密钥来源：ENCRYPTION_KEY_FILE=${ENCRYPTION_KEY_FILE}"
            if [ "$DEPLOY" != "container" ]; then
              pass "  裸机/Bun 直跑：该路径只需随发布保留即可"
+           elif [ ! -f /.dockerenv ]; then
+             warn "  从宿主机无法判定容器内挂载情况：请进容器执行本脚本，或人工确认该路径是持久化卷"
            elif [ -r /proc/self/mountinfo ]; then
              if grep -qF "${ENCRYPTION_KEY_FILE}" /proc/self/mountinfo 2>/dev/null; then
                pass "  该路径在挂载卷内（容器重建后仍在）"
