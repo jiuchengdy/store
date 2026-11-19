@@ -18,8 +18,9 @@
    **三档"不该动作"归一不报警**：`not_exist`（XorPay `not_exist` / Epusdt `10008` / edge 400 业务码）、`expire`、**`AWAITING_SELECTION`（占位单，买家没选链没转过钱，不是死单）**——三家各喂一条都进同一条告警，占位单不计死单。
    **并发**：sweeper 与真回调撞车时 `acceptPayment` 抛 409，必须当"已入账"吞掉，否则每 10 分钟假警一次。
 
-2. **上游错误码补全 + 资金滞留人工路径** — 实现 @u5c0f-r，**验收 @u5c0f-q**；runbook 7.2 人工分支 @u5c0f-o 已写。任务单 `P0-2-upstream-error-codes.md`。
-   补 `invalid_order_key`、`stock_unavailable`；**未知 4xx 不再无限重试**（含 Epusdt 配置类 400：`10016/10017/10018/10019` 映射 `MANUAL_REVIEW` + 配置告警，不是买家问题）。
+2. **上游错误码补全 + 资金滞留人工路径 + AICDK 重复检测停发** — 实现 @u5c0f-r，**验收 @u5c0f-q**；runbook 7.2 人工分支 @u5c0f-o 已写。任务单 `P0-2-upstream-error-codes.md`。
+   Dujiao：补 `invalid_order_key`、`stock_unavailable`；未知 4xx 不再无限重试（Epusdt 配置类 400：`10016/10017/10018/10019` → `MANUAL_REVIEW` + 配置告警，不是买家问题）。
+   **AICDK 重复检测停发（新 P0，@u5c0f-r）**：`aicdk.ts:270` 回读 `limit=2` 拿到两条以上时抛 `UPSTREAM_INVALID_RESPONSE`(uncertain=true) → 下一轮复用同一幂等键**再投**，等于上游已产生第二笔、还在发第三笔（重复交付=白送一单，且买家看到"充了两份"）。修法：改抛错为**写 `conflict` + 停发 + job done**（`fulfillmentResolution.conflict` 现成），让单进人工列表、不再打上游。验收：喂「回读返两条」mock，订单进 conflict 且**之后零次上游请求**。
 
 3. **数据库迁移基线化（排最前，所有改表 P0 的前置）** — @u5c0f-o 出方案。根因坐实：**真正 schema 源头是 `prisma/init.sql`（触发器/约束都在里面）**，`prisma/migrations` 为空（`e7dcd59` 主动移除历史），"以前怎么升库"永久无解，只能新建 `schema_version` 账本。最小版：`schema_version` 表 + 编号 SQL + 记账脚本，契约同步已由 `scripts/ops/gen-contract.ts` 自动化（干净库 exit 0、加列 exit 1，不再手改 335 条 JSON）。改表走 expand-contract 两步；P0#1 能力开关、P0#4 job 上限都要加列，都在等它。
 
@@ -28,7 +29,7 @@
 
 5. **备份三层自动化 + 恢复演练** — @u5c0f-o 修复 `fcdd6da`，**@u5c0f-q 已逐条实测验收通过（签字），可进 crontab**（前提 `REMOTE` 定了）。8 项全实跑：剪枝 BSD、异地 sha256、0600 权限、空壳 dump 打穿（MISMATCH exit 1）、`.counts` 缺失 exit 4、有数据用例、清理无残留。
    **仍卡用户**：① 异地目标 `192.168.0.1` 是否接受；② **加密未做**（age/gpg，需先定私钥谁保管）。
-   **新增判据（@u5c0f-r 第 9 项）**：恢复后随机取 1 条 `inventory` 调 `openCredential` 解密成功才 PASS（只打印成败、不打印明文）——否则"演练 PASS"也可能等于"卡密全解不开"（卡密 AES-256-GCM，密钥=`ENCRYPTION_KEY`）。
+   **新增判据（第 9 项，已由 @u5c0f-o 实现 `verify-credentials.ts`）**：恢复后调 `openCredential` 解密，**抽最早 1 条 + 最新 1 条**（只抽最新会漏掉"换过密钥、老密文全废"的假绿），两条都过才 PASS。退出码分级：正确密钥 0 / 换密钥 1 / 没给密钥 1（防 demo 回落 throwaway key）/ 空库存 5=`UNPROVEN`（进周报不进告警，只有 1 和 4 才呼人，否则每周假警）。
    **两把钥匙分开**：`ENCRYPTION_KEY` 必须有独立离线第二份、**不与 dump 同机**（dump+`.env` 一起泄露=全部买家凭据明文）；备份加密私钥只在恢复方、不与备份同机。
    **runbook 待补**：本地跑传 `DB_CONTAINER=store-db-1`；首周 `expected=N restored=N-1` 先看是否正在下单；排查口诀 `42703 / column ... does not exist` = 库没迁移、别查镜像网络。
 
@@ -52,10 +53,11 @@
 3. **支持邮箱**（或 TG / Tawk）。
 4. **加密货币退款汇率差口径**：按实收金额退、汇率波动由谁承担——客服不许自行承诺。
 5. **异地备份目标** `192.168.0.1` 行不行 + **加密私钥谁保管** + **`ENCRYPTION_KEY` 离线第二份放哪**（绝不能与 dump 同机）。
-6. **push 时机**：当前 **21 个**本地提交未上图，等你点头统一 push。
+6. **push 时机**：当前 **25 个**本地提交未上图，等你点头统一 push。
 7. **上线外部资源**：域名+HTTPS、服务器、三家真实支付商户号、上游采购账号、邮件服务账号。
 8. **`APP_MODE` demo→live 时点**。
 9. **AICDK 对接文档 + 沙箱/测试额度 + Session 留存政策书面答复**（@u5c0f-i，排前三）——没有它，兑换链路一次真实验证都做不了；AICDK 拿的是买家 Session/accessToken（系统里最敏感的数据），却**没有公开文档**。上线前必须在对方环境实测五条（附录 §8）：同键连发不重复、uncertain 重试不二次兑换、超时语义、account-session 取回上限、被拒是否消耗卡密。
+10. **真出事时多久内通知买家**（@u5c0f-d，上线前必须定）：行业惯例发现后尽快、72 小时内书面说明；定错无法事后补救。
 
 ## 五、已拍板决策（2026-11-19）
 
@@ -64,6 +66,7 @@
 - **占位单（`AWAITING_SELECTION`）不计死单、不报警**，归"不该动作"档。
 - 实现/验收分离：P0#1/#2/#4 由 @u5c0f-r 实现，@u5c0f-q 按任务单逐条实测验收。
 - 权限拆分、双人复核、对账 → backlog。
+- **backlog 另记**：加密格式 `v2:` 加 `<keyid>`（换钥匙时可枚举未重封的密文，越晚改越贵）；**禁止手改 `inventory.id`**（AAD 绑 `kind:recordId`，改了那批卡密永久解不开且不报警，确需重建先解密导出再重封）。
 - **uncertain 单默认"只回读、不重发"**：`Idempotency-Key` 键不变只给上游去重机会、不等于上游会去重（AICDK 无文档、未验证），除非 AICDK 环境五条实测通过。任何给 uncertain 单加补偿的改动**绝对不许递增 `fulfillmentAttempt` 或换 `requestId`**（否则上游无法去重=重复交付白送一单）。
 - **`/privacy` 已写对**（"兑换服务处理以其实际运行配置为准"的退路）；客服红线：口头/促销承诺不得比 `/privacy` 更宽松，AICDK 留存政策书面答复到手后**先改 `/privacy` 再改剧本**。
 - **排期（改表类 P0）**：P0#3（最小迁移账本）→ P0#4（job 上限 + 两封信）→ P0#1 → P0#2；P0#5 已完成只等 REMOTE+加密。一个 Codex 轮次别同时改触发器 + 契约 + 业务逻辑。
