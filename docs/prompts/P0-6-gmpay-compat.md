@@ -1,6 +1,6 @@
 # 任务单 P0#6：GMPay（EPUSDT v2.0.0）兼容性修复
 
-> 自包含任务单，给实现者（Codex，全新对话），不依赖聊天记录。
+> 自包含任务单，给实现者（本项目由团队自己实现，不交外部编码代理），不依赖聊天记录。
 > 仓库：`~/Documents/store`。**不要 git push**，改完只做本地提交。
 > 本单只改 GMPay 通道；不要顺手动 XorPay / 易支付的任何代码。
 > **修订版 2（2026-11-19，按 @u5c0f-i / @u5c0f-q 复核意见改）**：金额判据拆成「不可达/不符」两条、ack 与入账解耦、10002 措辞更正（商户侧无自动恢复、恢复走网关管理端）、明确允许改的文件清单与「不许新增 status」。
@@ -76,20 +76,20 @@
 
 ## 5. 验收判据
 
-> **执行分工 + 本轮范围（2026-11-19 用户拍板后更新）**：用户已决定**上线前不做支付通道真实联调**。因此判据 1、2、8 的「live」部分**本轮不执行**，改为「上线后第一笔真实支付触发时补测」；**合入门槛只看 Codex 的 mock 判据 + preflight**。Codex 不要试图伪造 live 调用；@u5c0f-q 也不要在上线前为此去真建单。
+> **执行分工 + 本轮范围（2026-11-19 用户拍板后更新）**：用户已决定**上线前不做支付通道真实联调**。因此判据 1、2、8 的「live」部分**本轮不执行**，改为「上线后第一笔真实支付触发时补测」；**合入门槛只看实现者的 mock 判据 + preflight**。实现者不要试图伪造 live 调用；@u5c0f-q 也不要在上线前为此去真建单。
 > 合入前必须绿：判据 3（3a/3b）、4、5、6、7、9 全部 mock/本地可验。判据 1/2/8 的 mock 部分照做（32 字符正例、34 字符反例、trade_id 不符），只有「真实网关建单/真签名回调」这一步挂起。
 > 兜底（首周）：每 30 分钟扫 `processing` 超 30 分钟订单，见 `docs/ops-runbook.md`；**第一笔真实支付任何异常 → 立即补做 1/2/8 的 live 部分，不等第二笔**。
 
-1. **建单（Codex: mock；q: live）**：真实订单号形态（32 字符）建单 → `200`，拿到 `trade_id` + `payment_url`；**反向用例**：34 字符必须失败且错误可读。
-2. **查单（Codex: mock；q: live）**：`confirmGmpayReceipt` 打的是 `GET /pay/check-status/{trade_id}`；`status=2` → `credited` 并落库；`status=4`（占位单）→ 不判成功。
-3. **金额（双向，Codex 用 mock 全覆盖）**：
+1. **建单（实现者自测：mock；小Q：live）**：真实订单号形态（32 字符）建单 → `200`，拿到 `trade_id` + `payment_url`；**反向用例**：34 字符必须失败且错误可读。
+2. **查单（实现者自测：mock；小Q：live）**：`confirmGmpayReceipt` 打的是 `GET /pay/check-status/{trade_id}`；`status=2` → `credited` 并落库；`status=4`（占位单）→ 不判成功。
+3. **金额（双向，实现者用 mock 全覆盖）**：
    - **3a 核对接口不可达**（超时/5xx/mock 抛错）→ 订单**仍然入账**，且有 1 条 warn 日志。
    - **3b 核对接口正常返回但不符**（amount 或 currency 与订单不同）→ **订单不入账**（状态不变、不发货）、`risk_events` 新增一条（`reference_id`=订单 id，`facts` 含预期/实收）、**对网关仍回 `ok` 200**，且日志里能看出「收到回调但未入账」。少付/改单号/复用订单号都不许发货。
 4. **10002**：mock 网关回 `10002` → 不重复建单、不进已支付、后台可见人工处置提示。
 5. **10041**：preflight 在 `APP_URL` 指内网/不可解析时判 FAIL；指公网域名时 PASS；未启用 gmpay 时不检查。
 6. **回归**：`bun run check` 0 error；带 `TEST_DATABASE_URL` **326 passed / 0 skipped**（新增用例则报数与新增条数必须对得上，**同时报 passed 与 skipped**）；`bun run db:verify` **335/393/85/6/6**；契约 `--check` exit 0。
 7. **不误伤**：`signatures.ts` 的 `git diff` 为空；`post()` 仍发 form-urlencoded；XorPay/易支付用例全绿；`orders.status` 未新增取值。
-8. **trade_id 不符（q 的第八条 live 验收，Codex 用 mock 覆盖）**：造一条**签名正确、status=2，但 `trade_id` 与本地 `paymentId` 不同**的回调 → **不入账**（订单状态不变）、`risk_events` 新增一条（`facts` 里能看出两边 trade_id）、**仍回 `ok` 200**；且验证判定顺序：让这条的金额**恰好等于**订单金额，仍然必须判 `mismatch`（证明「先 trade_id 再金额」没写反）。
+8. **trade_id 不符（q 的第八条 live 验收，实现者用 mock 覆盖）**：造一条**签名正确、status=2，但 `trade_id` 与本地 `paymentId` 不同**的回调 → **不入账**（订单状态不变）、`risk_events` 新增一条（`facts` 里能看出两边 trade_id）、**仍回 `ok` 200**；且验证判定顺序：让这条的金额**恰好等于**订单金额，仍然必须判 `mismatch`（证明「先 trade_id 再金额」没写反）。
 9. **10008 / 占位单（洞 2）**：`checkout-counter-resp` 回 `status_code=10008` 或 `status=4` → 归 `manual`：不入账、`risk_events` 一条、回 `ok`；**不许**当成 `unreachable` 走「靠签名入账」那条路。
 
 ## 6. 命令与基线

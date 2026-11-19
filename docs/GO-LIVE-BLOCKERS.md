@@ -41,7 +41,11 @@
 
 ## 二、上线前门槛（P1，不阻塞代码，但缺了不能上线）
 
-7. **e2e 进 CI + 报数铁律** — @u5c0f-q。铁律：报测试数必须同时贴 `N passed / N skipped`。
+7. **e2e 进 CI（先入闸，再转绿）+ 报数铁律** — @u5c0f-q。2026-11-19 小G 定序：**先让整套 e2e 进 CI 并把当前结果记录为基线（现在是红的），再逐条转绿**；不要「先修断言、等 e2e 能跑了再验」——那修完也没人证明修对了，正是「326 绿、e2e 红」的翻版。
+   - 现状证据：`vitest.config.ts` 的 `include` 只有 `src/**/*.test.ts`，**e2e 完全不在 326 那道闸里**；因此「326 passed」只覆盖单测。
+   - 已修一处漂移：`tests/refunds.spec.ts:100` 期望 `已原路退款`，而 `src/lib.ts:32` 对 refunded+original 返回 **`已退款`**（`:167` 的单选标签是 `退回原支付方式`）——@u5c0f-q 复现红后提交 `8303363`，只改断言、未动产品代码。
+   - 待办：跑完整套 e2e 报**真实 passed/failed 计数**；别处若有红，按同一根因（文案先改、断言没跟）一并收口，不单开卡。
+   - **报数铁律升级为两行**：`unit: N passed / S skipped` + `e2e: x passed / y failed（或未跑，附原因）`。一个数字不再代表全部测试。
 8. ~~**验签固定向量测试 + 三家沙箱真发一次**~~ → **已评估不做（用户 2026-11-19 拍板，见 §五），首周人工盯单兜底。**
    - 保留的部分：**验签固定向量**照写（纯本地、零风险、可回归）；XorPay 两组向量已三方交叉验证一致。
    - 不做/已免除：三家渠道沙箱或生产真发一笔、GMPay 真回调联调、XorPay 真下单退款联调。**上线前一律不做。**
@@ -53,7 +57,7 @@
 11. **代理商自托管前的品牌清理（P1，不阻塞 getcodex.plus 上线，阻塞"代理商自托管"能力）** — 品牌名 `GetCodex Plus` 写死在代码 **27 处/14 文件**（@u5c0f-d 复核；@u5c0f-r 原报 14 处漏了页头 `Site.tsx:33`、`seo.ts` 标题模板、页脚版权等最显眼处），多在买家可见（页头、`<title>`、JSON-LD、邮件主题、验证码主题、GA page_title）。代理商不改代码上线=顶着本仓库品牌卖货。已写 `docs/DEPLOYER-SETTINGS.md`（行号 + 改前改后 grep 归零）。**正确方向**：加 `settings.brandName`（后台可配）让 27 处读它，清单缩成"已知写死点"——列 backlog。改品牌不影响已注册 passkey（issuer/appName/rpName 只是显示名，校验依据 rpID/baseURL）。
 
 13. **渠道收敛后的两处代码清理（新，P1，@u5c0f-r 写单 / @u5c0f-q 验）** — 收款只剩 GMPay + 余额后，代码里留着两个会误导人的入口：
-   - **退款**：`services.ts:1531` 的自动退款分支无条件 `integration('xorpay', order.integrationId)` —— 对 GMPay 订单会拿 gmpay 的 integration id 去查 xorpay provider，必抛错（不会退错钱，但后台会弹一个看不懂的错误）。要求：后台退款对话框对 `provider !== 'xorpay'` **隐藏/禁用「自动原路退款」**，只保留「已人工退回，记账完成」与「退到余额」；`refundAutomatic` 对所有非 xorpay 订单一律 false（DB 约束已要求 original+automatic 必须 provider='xorpay'，代码要对齐而不是靠约束兜底）。
+   - **退款**：`services.ts:1531` 的自动退款分支无条件 `integration('xorpay', order.integrationId)` —— 对 GMPay 订单会拿 gmpay 的 integration id 去查 xorpay provider，必抛错（不会退错钱，但后台会弹一个看不懂的错误）。要求：后台退款对话框对 `provider !== 'xorpay'` **隐藏/禁用「自动原路退款」**，只保留「已人工退回，记账完成」与「退到余额」；`refundAutomatic` 对所有非 xorpay 订单一律 false；**并且代码不许在非 xorpay 路径写 `refund_status='processing'`**——`orders_refund_record_check` 要求 `processing` 必须 `refund_automatic=true`，而自动又必须是 `provider='xorpay'`，所以渠道收敛后**新人工退款只可能落 `review`**。靠约束兜底只会把业务错误留成运行时的报错框。文档里出现 `processing` 的地方要标「历史/自动退款遗留状态」，否则运维会去后台找一个永远不会再出现的值。
    - **渠道开关**：`PaymentOptions` 用 `settings[channel]` 过滤按钮，所以只要后台把 alipay/wechat 关掉就不会显示死按钮；但**开关与集成没有一致性校验**——开关为真、对应 provider 集成未启用时，买家会看到按钮、点了 502/503。要求：`deployer-preflight.sh` 增加一条「`settings.<channel>` 为真时，对应 provider 集成必须存在且 enabled，否则 FAIL」，并把渠道默认值从 `'alipay'` 改为「第一个可用渠道」（现在 `usePaymentChannel` 靠 fallback 兜，能工作但不该靠兜）。
 
 12. **采购单轮询上限 + 采购单可见性（新，P1，@u5c0f-r 写单 / @u5c0f-q 验）** — `procurement.ts:208` 中间态只 `nextRunAt=later(15)`（15 **秒**）、`attempts` 不参与判断；`:217` 异常退避 5–300 秒同样无上限。且 `stock_purchases` 在后台**零出口**（`grep stockPurchase` 在 components/api/data/services 全空），`review` 状态等于扔黑洞。任务单 `docs/prompts/P1-procurement-polling-cap.md`：中间态 `attempts>=120`（≈30 分钟）→ `review`+`stale_upstream`；异常 `attempts>=20` → `review`+`retry_exhausted`；后台加只读采购单列表。全部用 `attempts` 当计数器，**不迁移**。
