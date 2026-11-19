@@ -59,7 +59,7 @@ bun run worker
 
 ## 部署到生产环境
 
-[生产部署指南](docs/deployment.md) 包含 Docker、本机进程部署、环境变量、初始管理员、网关接入和备份说明。
+[生产部署指南](docs/deployment.md) 包含 Docker、本机进程部署、环境变量、初始管理员和网关接入。日常运维（备份、恢复演练、数据库变更、回滚、事故处置）见 [运维手册](docs/ops-runbook.md)。
 
 | 部署文件                                         | 用途                                            |
 | ------------------------------------------------ | ----------------------------------------------- |
@@ -82,6 +82,9 @@ bun run worker
 | [SEO 与统计](docs/growth-and-seo.md)                  | 搜索收录、站点验证与 GA4                           |
 | [数据库维护](docs/database.md)                        | 初始化、结构校验与存量数据库更新                   |
 | [开发与测试](docs/development.md)                     | 目录结构、常用命令与独立测试数据库                 |
+| [运维手册](docs/ops-runbook.md)                       | 部署更新、数据库变更顺序、备份与恢复演练、事故处置 |
+| [客服剧本](docs/support-playbook.md)                  | 买家问题定性依据、回复话术与升级条件               |
+| [上线阻塞清单](docs/GO-LIVE-BLOCKERS.md)              | 上线前必须完成项、负责人与验收判据                 |
 | [版本发布](docs/releasing.md)                         | GitHub 简介、发布检查、Release 与 GHCR 镜像        |
 
 ## 参与和反馈

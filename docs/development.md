@@ -34,6 +34,18 @@
 
 数据库命令和升级约定见 [数据库维护](database.md)。
 
+## 本地数据库前置（跑任何测试之前）
+
+本地数据库**不是常驻的**。OrbStack 没启动、容器 `store-db-1` 停在 `Exited (0)` 时，测试会直接报 `DriverAdapterError: DatabaseNotReachable (127.0.0.1:55439)`——这通常不是仓库坏了，是数据库没起来。先确认：
+
+```sh
+open -a OrbStack
+docker start store-db-1
+docker compose ps          # 直到 db 处于 running / healthy
+```
+
+数据库端口是 `55439`，不是默认的 `5432`。
+
 ## 测试数据库
 
 测试需要独立数据库，名称必须以 `_test` 结尾；本地 Compose 启动后可创建：
@@ -52,7 +64,11 @@ bun run build
 
 未设置 `TEST_DATABASE_URL` 时，本地会跳过数据库集成测试；CI 会直接报错。因此仅运行不带测试数据库的测试不能作为完整发布验证。
 
+**报数规矩（团队约定）**：报告测试结果必须同时给出 passed 与 skipped 两个数字，例如 `326 passed / 0 skipped`。裸跑时终端里没有红字，但可能有 170 项集成测试被静默跳过——只报 passed 会让人误判。
+
 ## 端到端测试
+
+首次运行前必须先装浏览器，`~/Library/Caches/ms-playwright` 为空时 Playwright 一条都跑不起来：
 
 ```sh
 bunx playwright install chromium
