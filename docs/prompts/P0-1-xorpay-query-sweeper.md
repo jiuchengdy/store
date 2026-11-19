@@ -22,6 +22,7 @@
 - **陷阱二**：同一个 `saveIntegration` 在 `config.ts:223-226` 要求 `publicKeys` 与 `secretKeys` 的**所有字段都非空**才允许启用渠道。把开关塞进 `publicKeys` 的第二个后果是：运维不填开关就**无法启用这个渠道**，而且提示语只有「请先填写完整配置再启用」，没人知道要填什么。
 - **因此（已拍板）**：能力开关**不塞 `publicKeys`**，存成独立字段（integration 的 `public` JSON 里单独命名空间，或等价机制），**缺省 `false`**。要求：全新环境不填开关也能正常启用渠道。
 - 现在只有 GMPay 有查询兜底（`confirmGmpayReceipt`），XorPay / 易支付没有。
+- **退款不在本单范围，但开关语义要说清**：`supportsRefund` 对 GMPay 应为 `false`（厂商不提供在线退款接口）。crypto 订单退款一律人工：**按币退，实收数量原数退回，汇率波动由买家承担**（2026-11-19 已拍板），退款完成时把「币种 / 实收数量 / 链 / 交易哈希」写进 `orders.refundResolutionNote`——`orders` 表没有这些结构化字段，"实收数量"也只有商户后台有。sweeper 只补入账，绝不触发退款。
 - 状态语义一律走统一映射层，见 `docs/prompts/APPENDIX-payment-status-mapping.md`（7 个统一语义：`CREDITED` / `PAID_UNCREDITED` / `NOT_PAID` / `AWAITING_SELECTION` / `EXPIRED` / `MANUAL_REVIEW` / `ORDER_NOT_FOUND`）。**厂商原始状态值不得当业务状态往外报。**
 
 ## 2. 上游语义（已由 @u5c0f-i 按官方文档核对，直接采信）
